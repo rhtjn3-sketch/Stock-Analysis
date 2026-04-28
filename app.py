@@ -64,33 +64,42 @@ def load_data():
                 
             if df.empty: continue
             
-            # Fetch Market Cap
+            # Fetch Market Cap safely
             stock_info = yf.Ticker(ticker).info
-            market_cap_raw = stock_info.get('marketCap', 0)
-            market_cap_cr = round(market_cap_raw / 10000000, 2) if market_cap_raw else 0
+            market_cap_raw = stock_info.get('marketCap')
+            
+            # If Yahoo returns None or 0, assign a default of 0 to prevent sorting errors
+            if market_cap_raw is None or market_cap_raw == 0:
+                market_cap_cr = 0.0
+            else:
+                market_cap_cr = round(market_cap_raw / 10000000, 2)
             
             current_price = df['Close'].iloc[-1]
             
+            # STRICT checks for trading days to prevent false returns for new IPOs
             ret_1w = (current_price / df['Close'].iloc[-6] - 1) * 100 if len(df) >= 6 else np.nan
             ret_1m = (current_price / df['Close'].iloc[-22] - 1) * 100 if len(df) >= 22 else np.nan
             ret_3m = (current_price / df['Close'].iloc[-64] - 1) * 100 if len(df) >= 64 else np.nan
             ret_6m = (current_price / df['Close'].iloc[-126] - 1) * 100 if len(df) >= 126 else np.nan
-            ret_1y = (current_price / df['Close'].iloc[0] - 1) * 100 if len(df) > 0 else np.nan
             
-            sma_50 = df['Close'].rolling(window=50).mean().iloc[-1]
-            sma_200 = df['Close'].rolling(window=200).mean().iloc[-1]
+            # Now strictly requires at least 250 trading days for a 1-year return
+            ret_1y = (current_price / df['Close'].iloc[-250] - 1) * 100 if len(df) >= 250 else np.nan
+            
+            # Calculate Moving Averages (also checking if enough data exists)
+            sma_50 = df['Close'].rolling(window=50).mean().iloc[-1] if len(df) >= 50 else np.nan
+            sma_200 = df['Close'].rolling(window=200).mean().iloc[-1] if len(df) >= 200 else np.nan
              
             metrics.append({
                 "Stock": ticker.replace('.NS', ''),
                 "Market Cap (Cr)": market_cap_cr,
                 "Price": round(current_price, 2),
-                "1W Return (%)": round(ret_1w, 2),
-                "1M Return (%)": round(ret_1m, 2),
-                "3M Return (%)": round(ret_3m, 2),
-                "6M Return (%)": round(ret_6m, 2),
-                "1Y Return (%)": round(ret_1y, 2),
-                "Above 50 DMA?": "Yes" if current_price > sma_50 else "No",
-                "Above 200 DMA?": "Yes" if current_price > sma_200 else "No"
+                "1W Return (%)": round(ret_1w, 2) if not np.isnan(ret_1w) else None,
+                "1M Return (%)": round(ret_1m, 2) if not np.isnan(ret_1m) else None,
+                "3M Return (%)": round(ret_3m, 2) if not np.isnan(ret_3m) else None,
+                "6M Return (%)": round(ret_6m, 2) if not np.isnan(ret_6m) else None,
+                "1Y Return (%)": round(ret_1y, 2) if not np.isnan(ret_1y) else None,
+                "Above 50 DMA?": "Yes" if not np.isnan(sma_50) and current_price > sma_50 else "No",
+                "Above 200 DMA?": "Yes" if not np.isnan(sma_200) and current_price > sma_200 else "No"
             })
         except Exception as e:
             pass
