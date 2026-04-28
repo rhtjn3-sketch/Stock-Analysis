@@ -67,13 +67,14 @@ def load_data():
     
     # 2. Download Historical Price Data (Bulk = Fast)
     with st.spinner(f'Downloading price data for {total_tickers} stocks...'):
-        data = yf.download(tickers, period="1y", group_by='ticker', threads=True)
+        data = yf.download(tickers, period="2y", group_by='ticker', threads=True)
     
     # 3. Setup Progress Bar for Market Cap & Sector fetching
     progress_text = "Calculating metrics & Market Cap. Please wait..."
     my_bar = st.progress(0, text=progress_text)
     
     metrics = []
+    failed_tickers = []
     
     for i, ticker in enumerate(tickers):
         my_bar.progress((i + 1) / total_tickers, text=f"Processing {i+1}/{total_tickers}: {ticker}")
@@ -130,6 +131,9 @@ def load_data():
             pass
             
     my_bar.empty()
+    # If any stocks failed, show a warning on the screen
+    if failed_tickers:
+        st.warning(f"⚠️ Could not fetch data for {len(failed_tickers)} stocks: {', '.join(failed_tickers)}")
     return pd.DataFrame(metrics)
 
 # Load the core dataset
