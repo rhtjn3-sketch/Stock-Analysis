@@ -1,7 +1,6 @@
 streamlit
 plotly
 yfinance
-time
 pandas
 numpy
 requests
