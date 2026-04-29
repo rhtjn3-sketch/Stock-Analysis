@@ -15,7 +15,7 @@ if 'current_page' not in st.session_state:
     st.session_state.current_page = 1
 
 def next_page():
-    if st.session_state.current_page < 3:
+    if st.session_state.current_page < 4: # UPDATED: Now supports 4 pages
         st.session_state.current_page += 1
 
 def prev_page():
@@ -23,10 +23,14 @@ def prev_page():
         st.session_state.current_page -= 1
 
 # =======================================================
-# DATA ENGINE 1: Fetching & Filtering 750 Stocks (for Watchlist)
+# CORE DATA ENGINE: Master Bulk Downloader
 # =======================================================
 @st.cache_data 
-def load_data_watchlist():
+def fetch_market_data_bulk():
+    """
+    Downloads the core historical data once. Shared across Page 1 and Page 4 
+    to prevent duplicate API calls and speed up the app.
+    """
     raw_tickers = []
     industry_map = {}
     
@@ -36,30 +40,39 @@ def load_data_watchlist():
     headers = {"User-Agent": "Mozilla/5.0"}
 
     try:
-        with st.spinner('Fetching latest Total Market constituents from NiftyIndices.com...'):
-            res = requests.get(total_market_url, headers=headers)
-            df_raw = pd.read_csv(io.StringIO(res.text))
-            df_raw.columns = df_raw.columns.str.strip()
-            df_raw['Symbol'] = df_raw['Symbol'].astype(str).str.strip()
-            
-            if 'Industry' in df_raw.columns:
-                df_raw['Industry'] = df_raw['Industry'].astype(str).str.strip()
-                industry_map = dict(zip(df_raw['Symbol'], df_raw['Industry']))                                                    
-            raw_tickers = df_raw['Symbol'].dropna().unique().tolist()
+        res = requests.get(total_market_url, headers=headers)
+        df_raw = pd.read_csv(io.StringIO(res.text))
+        df_raw.columns = df_raw.columns.str.strip()
+        df_raw['Symbol'] = df_raw['Symbol'].astype(str).str.strip()
+        
+        if 'Industry' in df_raw.columns:
+            df_raw['Industry'] = df_raw['Industry'].astype(str).str.strip()
+            industry_map = dict(zip(df_raw['Symbol'], df_raw['Industry']))                                                    
+        raw_tickers = df_raw['Symbol'].dropna().unique().tolist()
     except Exception as e:
-        st.error(f"Could not fetch live lists: {e}.")
+        pass
     
     if not raw_tickers:
         raw_tickers = ["RELIANCE", "TCS", "HDFCBANK", "ZOMATO", "SUZLON", "PAYTM"]
         industry_map = {t: "Unknown" for t in raw_tickers}                                                  
         
     tickers = [ticker if ticker.endswith('.NS') else f"{ticker}.NS" for ticker in raw_tickers]
+    
+    # Download 2 years of history for all tickers at once
+    data = yf.download(tickers, period="2y", group_by='ticker', threads=True)
+    
+    return tickers, data, industry_map
+
+# =======================================================
+# DATA ENGINE 1: Fetching & Filtering (for Watchlist)
+# =======================================================
+@st.cache_data 
+def load_data_watchlist():
+    with st.spinner('Fetching market data and calculating core metrics...'):
+        tickers, data, industry_map = fetch_market_data_bulk()
+        
     total_tickers = len(tickers)
-    
-    with st.spinner(f'Downloading price data for {total_tickers} stocks...'):
-        data = yf.download(tickers, period="2y", group_by='ticker', threads=True)
-    
-    progress_text = "Calculating metrics & Market Cap. Please wait..."
+    progress_text = "Fetching Fundamentals & Market Cap. Please wait..."
     my_bar = st.progress(0, text=progress_text)
     
     metrics = []
@@ -68,12 +81,9 @@ def load_data_watchlist():
     for i, ticker in enumerate(tickers):
         my_bar.progress((i + 1) / total_tickers, text=f"Processing {i+1}/{total_tickers}: {ticker}")
         try:
-            if ticker in data:
-                df = data[ticker].dropna()
-            else:
-                df = data.dropna()
-                
+            df = data[ticker].dropna() if len(tickers) > 1 else data.dropna()
             if df.empty: continue
+            
             clean_symbol = ticker.replace('.NS', '')                                       
             
             stock_info = yf.Ticker(ticker).info
@@ -188,6 +198,51 @@ def fetch_sector_constituents(sector_name):
         return df['Symbol'].astype(str).str.strip().tolist()
     except Exception: return []
 
+# =======================================================
+# DATA ENGINE 4: Historical Price Volume Scanner
+# =======================================================
+@st.cache_data
+def get_price_volume_history():
+    """
+    Leverages the bulk downloaded data to calculate daily volume surges
+    and price actions for the last 30 trading days for all stocks.
+    """
+    tickers, data, industry_map = fetch_market_data_bulk()
+    history_records = {}
+    
+    with st.spinner("Calculating 30-Day Historical Price & Volume signals..."):
+        for ticker in tickers:
+            try:
+                df = data[ticker].dropna() if len(tickers) > 1 else data.dropna()
+                if df.empty or len(df) < 25: continue
+                
+                close = df['Close']
+                vol = df['Volume']
+                
+                # Calculate Daily Returns and 20-Day Average Volume
+                pct_change = (close / close.shift(1) - 1) * 100
+                avg_vol = vol.rolling(window=20).mean()
+                vol_surge = vol / avg_vol
+                
+                # Package the last 30 trading days into a history dataframe
+                df_history = pd.DataFrame({
+                    'Close': close,
+                    'Volume': vol,
+                    'Avg_Volume': avg_vol,
+                    'Pct_Change': pct_change,
+                    'Vol_Surge': vol_surge
+                }).tail(30)
+                
+                clean_symbol = ticker.replace('.NS', '')
+                history_records[clean_symbol] = {
+                    'Sector': industry_map.get(clean_symbol, 'Unknown'),
+                    'History': df_history
+                }
+            except Exception:
+                pass
+                
+    return history_records
+
 # ==========================================
 # UI: TOP NAVIGATION BAR
 # ==========================================
@@ -201,9 +256,10 @@ with col_title:
     if st.session_state.current_page == 1: st.markdown("<h2 style='text-align: center;'>Part 1: Market Watchlist</h2>", unsafe_allow_html=True)
     elif st.session_state.current_page == 2: st.markdown("<h2 style='text-align: center;'>Part 2: Nifty Broad Indices Benchmarking</h2>", unsafe_allow_html=True)
     elif st.session_state.current_page == 3: st.markdown("<h2 style='text-align: center;'>Part 3: Nifty Sectoral Momentum Pulse</h2>", unsafe_allow_html=True)
+    elif st.session_state.current_page == 4: st.markdown("<h2 style='text-align: center;'>Part 4: Price-Volume Action Screener</h2>", unsafe_allow_html=True)
 
 with col_next:
-    if st.session_state.current_page < 3: st.button("Next Screen ➡️", on_click=next_page)
+    if st.session_state.current_page < 4: st.button("Next Screen ➡️", on_click=next_page)
 
 st.divider() 
 
@@ -315,8 +371,8 @@ elif st.session_state.current_page == 3:
         "^CNXINFRA": "Infra", "^CNXCONSUM": "Consumption", "^CNXIT": "IT",
         "NIFTY_FIN_SERVICE.NS": "Fin Serv", "^CNXFMCG": "FMCG", "^CNXENERGY": "Energy",
         "^CNXCMDT": "Commodities", "CPSEETF.NS": "CPSE", "^NSEBANK": "Bank",
-        "^CNXAUTO": "Auto", "MODEFENCE.NS": "Defence", "MOTOUR.NS": "Tourism", 
-        "MOCAPITAL.NS": "Capital Markets", "AXISHCETF.NS": "Healthcare"   
+        "^CNXAUTO": "Auto", "MODEFENCE.NS": "Defence", "MOTOUR.NS": "Tourism",
+		"MOCAPITAL.NS": "Capital Markets", "AXISHCETF.NS": "Healthcare" 
     }
     
     df_sectors, _ = load_index_data(sectoral_config)
@@ -349,32 +405,25 @@ elif st.session_state.current_page == 3:
             df_drilled = df_master[df_master['Stock'].isin(constituent_symbols)].copy()
             
             if not df_drilled.empty:
-                # Calculate Sector Mean & Volatility BEFORE applying DMA filters
                 return_cols = ["1W Return (%)", "1M Return (%)", "3M Return (%)", "6M Return (%)", "1Y Return (%)"]
                 sector_stats = {}
                 for col in return_cols:
                     sector_stats[col] = {'mean': df_drilled[col].mean(), 'std': df_drilled[col].std()}
                 
-                # UPDATED: Position checkboxes on the extreme right, stacked vertically
-                col_empty, col_filters = st.columns([4, 1]) # 4 parts empty space, 1 part for filters
-                
+                col_empty, col_filters = st.columns([4, 1]) 
                 with col_filters:
                     st.markdown("**Technical Filters:**")
                     dd_filter_50 = st.checkbox("Above 50 DMA ? (Yes/No)", key="dd_50")
                     dd_filter_200 = st.checkbox("Above 200 DMA ? (Yes/No)", key="dd_200")
                 
-                # Apply DMA logic based on the explicit selection
-                if dd_filter_50: 
-                    df_drilled = df_drilled[df_drilled["Above 50 DMA?"] == "Yes"]
-                if dd_filter_200: 
-                    df_drilled = df_drilled[df_drilled["Above 200 DMA?"] == "Yes"]
+                if dd_filter_50: df_drilled = df_drilled[df_drilled["Above 50 DMA?"] == "Yes"]
+                if dd_filter_200: df_drilled = df_drilled[df_drilled["Above 200 DMA?"] == "Yes"]
                 
                 df_drilled_sorted = df_drilled.sort_values(by="Market Cap (Cr)", ascending=False).reset_index(drop=True)
                 df_drilled_sorted.index = df_drilled_sorted.index + 1
                 
                 st.markdown(f"Showing **{len(df_drilled_sorted)}** stocks from the **Nifty {drill_sector}** index.")
                 
-                # The 9-Color Dynamic CSS Application
                 def apply_z_colors(s):
                     if s.name in return_cols:
                         mean = sector_stats[s.name]['mean']
@@ -385,15 +434,15 @@ elif st.session_state.current_page == 3:
                                 colors.append('')
                                 continue
                             z = (val - mean) / std
-                            if z >= 1.0: colors.append('background-color: #1b5e20; color: white;')      # Dark Green
-                            elif z >= 0.5: colors.append('background-color: #4caf50; color: white;')    # Green
-                            elif z > 0: colors.append('background-color: #a5d6a7; color: black;')       # Light Green
-                            elif z >= -0.5: colors.append('background-color: #ffe0b2; color: black;')   # Light Orange
-                            elif z >= -1.0: colors.append('background-color: #ff9800; color: black;')   # Orange
-                            elif z >= -1.5: colors.append('background-color: #f57c00; color: white;')   # Dark Orange
-                            elif z >= -2.0: colors.append('background-color: #ef9a9a; color: black;')   # Light Red
-                            elif z >= -2.5: colors.append('background-color: #f44336; color: white;')   # Red
-                            else: colors.append('background-color: #b71c1c; color: white;')             # Dark Red
+                            if z >= 1.0: colors.append('background-color: #1b5e20; color: white;')      
+                            elif z >= 0.5: colors.append('background-color: #4caf50; color: white;')    
+                            elif z > 0: colors.append('background-color: #a5d6a7; color: black;')       
+                            elif z >= -0.5: colors.append('background-color: #ffe0b2; color: black;')   
+                            elif z >= -1.0: colors.append('background-color: #ff9800; color: black;')   
+                            elif z >= -1.5: colors.append('background-color: #f57c00; color: white;')   
+                            elif z >= -2.0: colors.append('background-color: #ef9a9a; color: black;')   
+                            elif z >= -2.5: colors.append('background-color: #f44336; color: white;')   
+                            else: colors.append('background-color: #b71c1c; color: white;')             
                         return colors
                     return ['' for _ in s]
                 
@@ -403,7 +452,6 @@ elif st.session_state.current_page == 3:
                         "3M Return (%)": "{:.2f}%", "6M Return (%)": "{:.2f}%", "1Y Return (%)": "{:.2f}%"
                     }, na_rep="-"
                 )
-                
                 st.dataframe(styled_df, use_container_width=True, height=400)
             else:
                 st.info(f"The stocks in the {drill_sector} index are not currently in your Watchlist URL.")
@@ -411,3 +459,83 @@ elif st.session_state.current_page == 3:
             st.warning(f"Could not fetch the official constituent list for {drill_sector}.")
     else:
         st.warning("⚠️ Could not load data for Nifty Sectoral Indices.")
+
+# =======================================================
+# PAGE 4: PRICE-VOLUME ACTION SCREENER
+# =======================================================
+elif st.session_state.current_page == 4:
+    st.sidebar.header("Price-Volume Parameters")
+    
+    # 1. Load the pre-calculated daily history (Uses cached bulk data so it's incredibly fast)
+    history_records = get_price_volume_history()
+    
+    if not history_records:
+        st.warning("⚠️ Market data is still initializing or unavailable.")
+    else:
+        # Extract available historical dates from the first available stock
+        first_stock = list(history_records.keys())[0]
+        available_dates = history_records[first_stock]['History'].index.strftime('%Y-%m-%d').tolist()
+        
+        # 2. UI Controls for the Screener
+        selected_date_str = st.sidebar.selectbox("Select Target Date:", sorted(available_dates, reverse=True))
+        
+        # Threshold selections
+        vol_multiplier = st.sidebar.number_input("Minimum Volume Surge (x Usual)", min_value=1.0, value=2.0, step=0.5)
+        price_surge_pct = st.sidebar.number_input("Minimum Price Surge (%)", min_value=0.5, value=3.0, step=0.5)
+        
+        results = []
+        
+        # 3. Process the logic across all stocks
+        for stock, info in history_records.items():
+            df_hist = info['History']
+            
+            # Convert DatetimeIndex to string for easy exact matching
+            df_hist_str = df_hist.copy()
+            df_hist_str.index = df_hist_str.index.strftime('%Y-%m-%d')
+            
+            if selected_date_str in df_hist_str.index:
+                row = df_hist_str.loc[selected_date_str]
+                
+                # Check if the stock meets the criteria ON the selected date
+                if row['Pct_Change'] >= price_surge_pct and row['Vol_Surge'] >= vol_multiplier:
+                    
+                    # 4. Extract exactly which dates triggered this criteria over the last 30 days
+                    action_dates_df = df_hist_str[(df_hist_str['Pct_Change'] >= price_surge_pct) & (df_hist_str['Vol_Surge'] >= vol_multiplier)]
+                    action_count = len(action_dates_df)
+                    
+                    # Create the formatted string: "Count (Date1, Date2)"
+                    dates_str = ", ".join(action_dates_df.index.tolist())
+                    display_val = f"{action_count} ({dates_str})"
+                    
+                    results.append({
+                        "Stock": stock,
+                        "Sector": info['Sector'],
+                        "Close Price": row['Close'],
+                        "Volume": row['Volume'],
+                        "20D Avg Volume": row['Avg_Volume'],
+                        "Volume Surge (x)": row['Vol_Surge'],
+                        "Price Change (%)": row['Pct_Change'],
+                        "Action Count (Last 30 Days)": display_val  # Injecting the new string format here
+                    })
+                    
+        # 5. Render the Results
+        if results:
+            df_results = pd.DataFrame(results)
+            # Sort by the most aggressive volume surge
+            df_results = df_results.sort_values(by="Volume Surge (x)", ascending=False).reset_index(drop=True)
+            df_results.index = df_results.index + 1
+            
+            st.markdown(f"### Stocks showing Price-Volume Action on **{selected_date_str}**")
+            st.markdown(f"> **Criteria Met:** Price increased by **≥ {price_surge_pct}%** |  Volume was **≥ {vol_multiplier}x** its 20-Day Average")
+            
+            # Format and display the table
+            st.dataframe(df_results.style.format({
+                "Close Price": "{:.2f}",
+                "Volume": "{:,.0f}",
+                "20D Avg Volume": "{:,.0f}",
+                "Volume Surge (x)": "{:.2f}x",
+                "Price Change (%)": "{:.2f}%"
+            }), use_container_width=True, height=600)
+            
+        else:
+            st.info(f"No stocks in your watchlist met the criteria on {selected_date_str}.")
