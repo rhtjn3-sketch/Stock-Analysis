@@ -34,8 +34,8 @@ def fetch_market_data_bulk():
     raw_tickers = []
     industry_map = {}
     
-    #total_market_url = "https://www.niftyindices.com/IndexConstituent/ind_niftytotalmarket_list.csv"
-    total_market_url = "https://www.niftyindices.com/IndexConstituent/ind_niftymidcap50list.csv"
+    total_market_url = "https://www.niftyindices.com/IndexConstituent/ind_niftytotalmarket_list.csv"
+    #total_market_url = "https://www.niftyindices.com/IndexConstituent/ind_niftymidcap50list.csv"
     
     headers = {"User-Agent": "Mozilla/5.0"}
 
