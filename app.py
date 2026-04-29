@@ -63,6 +63,8 @@ def fetch_market_data_bulk():
     #data = yf.download(tickers, period="2y", group_by='ticker', threads=7)
     
     # Loop based data gathering
+    total_tickers = len(tickers)
+    
     data_frames = []
     chunk_size = 50  # Download 50 stocks at a time
     
