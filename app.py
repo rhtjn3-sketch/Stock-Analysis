@@ -34,8 +34,8 @@ def fetch_market_data_bulk():
     raw_tickers = []
     industry_map = {}
     
-    total_market_url = "https://www.niftyindices.com/IndexConstituent/ind_niftytotalmarket_list.csv"
-    #total_market_url = "https://www.niftyindices.com/IndexConstituent/ind_niftymidcap50list.csv"
+    #total_market_url = "https://www.niftyindices.com/IndexConstituent/ind_niftytotalmarket_list.csv"
+    total_market_url = "https://www.niftyindices.com/IndexConstituent/ind_niftymidcap50list.csv"
     
     headers = {"User-Agent": "Mozilla/5.0"}
 
@@ -86,12 +86,24 @@ def load_data_watchlist():
             
             clean_symbol = ticker.replace('.NS', '')                                       
             
-            stock_info = yf.Ticker(ticker).info
+            # --- UPDATED: Market Cap Stability Trick ---
+            tkr = yf.Ticker(ticker)
+            stock_info = tkr.info
             market_cap_raw = stock_info.get('marketCap')
+            
+            # Fallback to the lightweight 'fast_info' endpoint if the main scrape fails
+            if not market_cap_raw or market_cap_raw == 0:
+                try:
+                    market_cap_raw = tkr.fast_info.market_cap
+                except Exception:
+                    market_cap_raw = 0
+
             sector = industry_map.get(clean_symbol, 'Unknown')
             
-            if market_cap_raw is None or market_cap_raw == 0: market_cap_cr = 0.0
-            else: market_cap_cr = round(market_cap_raw / 10000000, 2)
+            if market_cap_raw is None or market_cap_raw == 0: 
+                market_cap_cr = 0.0
+            else: 
+                market_cap_cr = round(market_cap_raw / 10000000, 2)
             
             current_price = df['Close'].iloc[-1]
             
@@ -184,7 +196,7 @@ def fetch_sector_constituents(sector_name):
         "MNC": "ind_niftymnclist.csv", "PSU Bank": "ind_niftypsubanklist.csv", "Private Bank": "ind_nifty_privatebanklist.csv",
         "Media": "ind_niftymedialist.csv", "Fin Serv": "ind_niftyfinancelist.csv", "Commodities": "ind_niftycommoditieslist.csv",
         "Consumption": "ind_niftyconsumptionlist.csv", "CPSE": "ind_niftycpselist.csv", "Service": "ind_niftyservicelist.csv",
-        "Oil and Gas": "ind_niftyoilgaslist.csv", "Defence" : "ind_niftyindiadefence_list.csv", "Capital Markets": "ind_niftycapitalmarkets_list.csv",
+        "Oil and Gas": "ind_niftyoilgaslist.csv", "Defence" : "ind_niftyindiadefence_list.csv", "Capital Markets": "ind_niftyCapitalMarkets_list.csv",
         "Tourism": "ind_niftyindiatourism_list.csv", "Healthcare": "ind_niftyhealthcarelist.csv"
     }
     file_name = url_map.get(sector_name)
@@ -307,7 +319,9 @@ if st.session_state.current_page == 1:
 
     st.dataframe(df_sorted.style.format(
         formatter={
-            "Market Cap (Cr)": "{:,.2f}", "1W Return (%)": "{:.2f}%", "1M Return (%)": "{:.2f}%",
+            "Market Cap (Cr)": "{:,.2f}", 
+            "Price": "{:,.2f}", # UPDATED: Limits Price to 2 decimals
+            "1W Return (%)": "{:.2f}%", "1M Return (%)": "{:.2f}%",
             "3M Return (%)": "{:.2f}%", "6M Return (%)": "{:.2f}%", "1Y Return (%)": "{:.2f}%",
         }, na_rep="-"
     ), use_container_width=True, height=600)
@@ -448,7 +462,9 @@ elif st.session_state.current_page == 3:
                 
                 styled_df = df_drilled_sorted.style.apply(apply_z_colors, axis=0).format(
                     formatter={
-                        "Market Cap (Cr)": "{:,.2f}", "1W Return (%)": "{:.2f}%", "1M Return (%)": "{:.2f}%",
+                        "Market Cap (Cr)": "{:,.2f}", 
+                        "Price": "{:,.2f}", # UPDATED: Limits Price to 2 decimals
+                        "1W Return (%)": "{:.2f}%", "1M Return (%)": "{:.2f}%",
                         "3M Return (%)": "{:.2f}%", "6M Return (%)": "{:.2f}%", "1Y Return (%)": "{:.2f}%"
                     }, na_rep="-"
                 )
@@ -530,7 +546,7 @@ elif st.session_state.current_page == 4:
             
             # Format and display the table
             st.dataframe(df_results.style.format({
-                "Close Price": "{:.2f}",
+                "Close Price": "{:,.2f}", # UPDATED: Commas and limited to 2 decimals
                 "Volume": "{:,.0f}",
                 "20D Avg Volume": "{:,.0f}",
                 "Volume Surge (x)": "{:.2f}x",
