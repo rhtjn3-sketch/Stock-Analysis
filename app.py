@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import requests
 import io
+import time
 import plotly.express as px  
 
 st.set_page_config(page_title="Nifty 750 Pro Engine", layout="wide")
@@ -59,7 +60,23 @@ def fetch_market_data_bulk():
     tickers = [ticker if ticker.endswith('.NS') else f"{ticker}.NS" for ticker in raw_tickers]
     
     # Download 2 years of history for all tickers at once
-    data = yf.download(tickers, period="2y", group_by='ticker', threads=5)
+    #data = yf.download(tickers, period="2y", group_by='ticker', threads=7)
+    
+    # Loop based data gathering
+    data_frames = []
+    chunk_size = 50  # Download 50 stocks at a time
+    
+    with st.spinner(f'Downloading {total_tickers} stocks in batches to prevent server blocks...'):
+        for i in range(0, total_tickers, chunk_size):
+            chunk = tickers[i : i + chunk_size]
+            # threads=False prevents sudden spikes in connections
+            chunk_data = yf.download(chunk, period="2y", group_by='ticker', threads=False, progress=False)
+            data_frames.append(chunk_data)
+            time.sleep(1) # Breathe for 1 second so Yahoo doesn't ban the Streamlit IP
+            
+    # Combine all chunks back into a single dataframe
+    data = pd.concat(data_frames, axis=1)
+   
     
     return tickers, data, industry_map
 
