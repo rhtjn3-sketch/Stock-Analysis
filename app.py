@@ -122,7 +122,7 @@ def load_data_watchlist():
             if market_cap_raw is None or market_cap_raw == 0: 
                 market_cap_cr = 0.0
             else: 
-                market_cap_cr = round(market_cap_raw / 10000000, 2)
+                market_cap_cr = round(market_cap_raw / 10000000, 0)
             
             current_price = df['Close'].iloc[-1]
             
@@ -338,7 +338,7 @@ if st.session_state.current_page == 1:
 
     st.dataframe(df_sorted.style.format(
         formatter={
-            "Market Cap (Cr)": "{:,.2f}", 
+            "Market Cap (Cr)": "{:,.0f}", 
             "Price": "{:,.2f}", # UPDATED: Limits Price to 2 decimals
             "1W Return (%)": "{:.2f}%", "1M Return (%)": "{:.2f}%",
             "3M Return (%)": "{:.2f}%", "6M Return (%)": "{:.2f}%", "1Y Return (%)": "{:.2f}%",
@@ -481,7 +481,7 @@ elif st.session_state.current_page == 3:
                 
                 styled_df = df_drilled_sorted.style.apply(apply_z_colors, axis=0).format(
                     formatter={
-                        "Market Cap (Cr)": "{:,.2f}", 
+                        "Market Cap (Cr)": "{:,.0f}", 
                         "Price": "{:,.2f}", # UPDATED: Limits Price to 2 decimals
                         "1W Return (%)": "{:.2f}%", "1M Return (%)": "{:.2f}%",
                         "3M Return (%)": "{:.2f}%", "6M Return (%)": "{:.2f}%", "1Y Return (%)": "{:.2f}%"
