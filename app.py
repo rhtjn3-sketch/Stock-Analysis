@@ -184,7 +184,7 @@ def fetch_sector_constituents(sector_name):
         "MNC": "ind_niftymnclist.csv", "PSU Bank": "ind_niftypsubanklist.csv", "Private Bank": "ind_nifty_privatebanklist.csv",
         "Media": "ind_niftymedialist.csv", "Fin Serv": "ind_niftyfinancelist.csv", "Commodities": "ind_niftycommoditieslist.csv",
         "Consumption": "ind_niftyconsumptionlist.csv", "CPSE": "ind_niftycpselist.csv", "Service": "ind_niftyservicelist.csv",
-        "Oil and Gas": "ind_niftyoilgaslist.csv", "Defence" : "ind_niftyindiadefence_list.csv", "Capital Market": "ind_niftycapitalmarkets_list.csv",
+        "Oil and Gas": "ind_niftyoilgaslist.csv", "Defence" : "ind_niftyindiadefence_list.csv", "Capital Markets": "ind_niftycapitalmarkets_list.csv",
         "Tourism": "ind_niftyindiatourism_list.csv", "Healthcare": "ind_niftyhealthcarelist.csv"
     }
     file_name = url_map.get(sector_name)
