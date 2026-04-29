@@ -59,7 +59,7 @@ def fetch_market_data_bulk():
     tickers = [ticker if ticker.endswith('.NS') else f"{ticker}.NS" for ticker in raw_tickers]
     
     # Download 2 years of history for all tickers at once
-    data = yf.download(tickers, period="2y", group_by='ticker', threads=7)
+    data = yf.download(tickers, period="2y", group_by='ticker', threads=5)
     
     return tickers, data, industry_map
 
