@@ -30,8 +30,8 @@ def load_data_watchlist():
     raw_tickers = []
     industry_map = {}
     
-    total_market_url = "https://www.niftyindices.com/IndexConstituent/ind_niftytotalmarket_list.csv"
-    #total_market_url = "https://www.niftyindices.com/IndexConstituent/ind_niftymidcap50list.csv"
+    #total_market_url = "https://www.niftyindices.com/IndexConstituent/ind_niftytotalmarket_list.csv"
+    total_market_url = "https://www.niftyindices.com/IndexConstituent/ind_niftymidcap50list.csv"
     
     headers = {"User-Agent": "Mozilla/5.0"}
 
@@ -171,9 +171,11 @@ def fetch_sector_constituents(sector_name):
         "Auto": "ind_niftyautolist.csv", "Bank": "ind_niftybanklist.csv", "IT": "ind_niftyitlist.csv",
         "Pharma": "ind_niftypharmalist.csv", "Realty": "ind_niftyrealtylist.csv", "FMCG": "ind_niftyfmcglist.csv",
         "Metal": "ind_niftymetallist.csv", "Energy": "ind_niftyenergylist.csv", "Infra": "ind_niftyinfralist.csv",
-        "MNC": "ind_niftymnclist.csv", "PSU Bank": "ind_niftypsubanklist.csv", "Private Bank": "ind_niftyprivatebanklist.csv",
-        "Media": "ind_niftymedialist.csv", "Fin Serv": "ind_niftyfinlist.csv", "Commodities": "ind_niftycommoditieslist.csv",
+        "MNC": "ind_niftymnclist.csv", "PSU Bank": "ind_niftypsubanklist.csv", "Private Bank": "ind_nifty_privatebanklist.csv",
+        "Media": "ind_niftymedialist.csv", "Fin Serv": "ind_niftyfinancelist.csv", "Commodities": "ind_niftycommoditieslist.csv",
         "Consumption": "ind_niftyconsumptionlist.csv", "CPSE": "ind_niftycpselist.csv", "Service": "ind_niftyservicelist.csv"
+        "Oil and Gas": "ind_niftyoilgaslist.csv", "Defence" : "ind_niftyindiadefence_list.csv", "Capital Market": "ind_niftyCapitalMarkets_list.csv",
+        "Tourism": "ind_niftyindiatourism_list.csv", "Healthcare": "ind_niftyhealthcarelist.csv"
     }
     file_name = url_map.get(sector_name)
     if not file_name: return []
@@ -313,7 +315,8 @@ elif st.session_state.current_page == 3:
         "^CNXINFRA": "Infra", "^CNXCONSUM": "Consumption", "^CNXIT": "IT",
         "NIFTY_FIN_SERVICE.NS": "Fin Serv", "^CNXFMCG": "FMCG", "^CNXENERGY": "Energy",
         "^CNXCMDT": "Commodities", "CPSEETF.NS": "CPSE", "^NSEBANK": "Bank",
-        "^CNXAUTO": "Auto", "MODEFENCE.NS": "Defence", "MOTOUR.NS": "Tourism", "MOCAPITAL.NS": "Capital Markets"   
+        "^CNXAUTO": "Auto", "MODEFENCE.NS": "Defence", "MOTOUR.NS": "Tourism", 
+        "MOCAPITAL.NS": "Capital Markets", "AXISHCETF.NS": "Healthcare"   
     }
     
     df_sectors, _ = load_index_data(sectoral_config)
