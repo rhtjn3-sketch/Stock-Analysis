@@ -83,26 +83,6 @@ def trigger_manual_data_refresh():
     else:
         return False
 
-											
-									  
-											
-										   
-												 
-
-																		  
-																					  
-											   
-		
-			   
-															
-															 
-					 
-												  
-		 
-																												  
-
-					
-
 # =======================================================
 # CORE DATA ENGINE: Decoupled Parquet Reader
 # =======================================================
@@ -137,7 +117,6 @@ def fetch_market_data_bulk():
     try:
         final_data = pd.read_parquet("nifty_750_master.parquet")
     except FileNotFoundError:
-																								 
         final_data = pd.DataFrame()
         
     return tickers, final_data, industry_map
@@ -152,37 +131,35 @@ def load_data_watchlist():
     if data.empty:
         return pd.DataFrame()
         
+    # --- NEW: Instantly load Market Caps from the local CSV ---
+    try:
+        df_metadata = pd.read_csv("nifty_750_metadata.csv")
+        # Convert to dictionary for instant lookups: {'RELIANCE': 1900000.0, ...}
+        mcap_dict = dict(zip(df_metadata['Stock'], df_metadata['Market Cap (Cr)']))
+        sector_dict = dict(zip(df_metadata['Stock'], df_metadata['Sector']))
+    except FileNotFoundError:
+        mcap_dict = {}
+        sector_dict = {}
+        
     total_tickers = len(tickers)
-    progress_text = "Parsing fundamentals..."
+    progress_text = "Compiling Watchlist..."
     my_bar = st.progress(0, text=progress_text)
     
     metrics = []
-					   
     
     for i, ticker in enumerate(tickers):
         my_bar.progress((i + 1) / total_tickers, text=f"Processing {i+1}/{total_tickers}: {ticker}")
+        
         try:
             df = data[ticker].dropna() if len(tickers) > 1 else data.dropna()
             if df.empty: continue
             
             clean_symbol = ticker.replace('.NS', '')                                       
             
-            tkr = yf.Ticker(ticker)
-            stock_info = tkr.info
-            market_cap_raw = stock_info.get('marketCap')
-            
-            if not market_cap_raw or market_cap_raw == 0:
-                try:
-                    market_cap_raw = tkr.fast_info.market_cap
-                except Exception:
-                    market_cap_raw = 0
-
-            sector = industry_map.get(clean_symbol, 'Unknown')
-            
-            if market_cap_raw is None or market_cap_raw == 0: 
-                market_cap_cr = 0.0
-            else: 
-                market_cap_cr = round(market_cap_raw / 10000000, 0)
+            # --- NO MORE YAHOO API CALLS HERE! ---
+            # Instantly grab the pre-calculated fundamental data
+            sector = sector_dict.get(clean_symbol, industry_map.get(clean_symbol, 'Unknown'))
+            market_cap_cr = mcap_dict.get(clean_symbol, 0.0)
             
             current_price = df['Close'].iloc[-1]
             
@@ -209,11 +186,11 @@ def load_data_watchlist():
                 "Above 200 DMA?": "Yes" if not np.isnan(sma_200) and current_price > sma_200 else "No"
             })
         except Exception:
-            pass
+            pass 
             
     my_bar.empty()
     return pd.DataFrame(metrics)
-
+	
 # =======================================================
 # DATA ENGINE 2: Fetching Index Performance
 # =======================================================
