@@ -107,7 +107,7 @@ def load_data_watchlist():
             if market_cap_raw is None or market_cap_raw == 0: 
                 market_cap_cr = 0.0
             else: 
-                market_cap_cr = round(market_cap_raw / 10000000, 2)
+                market_cap_cr = round(market_cap_raw / 10000000, 0)
             
             current_price = df['Close'].iloc[-1]
             
@@ -343,7 +343,7 @@ elif st.session_state.current_page == 2:
     
     if not df_indices.empty:
         timeframes = ["1W Return (%)", "1M Return (%)", "3M Return (%)", "6M Return (%)", "1Y Return (%)"]
-        selected_timeframe = st.selectbox("Select Timeframe:", timeframes, index=1)
+        selected_timeframe = st.selectbox("Select Timeframe:", timeframes, index=0)
         
         df_sorted_indices = df_indices.sort_values(by=selected_timeframe, ascending=False).reset_index(drop=True)
         df_sorted_indices['Color'] = np.where(df_sorted_indices[selected_timeframe] >= 0, 'Positive', 'Negative')
@@ -397,7 +397,7 @@ elif st.session_state.current_page == 3:
     
     if not df_sectors.empty:
         timeframes_sector = ["1W Return (%)", "1M Return (%)", "3M Return (%)", "6M Return (%)", "1Y Return (%)"]
-        selected_timeframe_sector = st.selectbox("Select Momentum Timeframe:", timeframes_sector, index=1)
+        selected_timeframe_sector = st.selectbox("Select Momentum Timeframe:", timeframes_sector, index=0)
         
         df_sorted_sectors = df_sectors.sort_values(by=selected_timeframe_sector, ascending=False).reset_index(drop=True)
         stacked_display = df_sorted_sectors.copy()
