@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import requests
 import io
-import time
+#import time
 import plotly.express as px  
 
 st.set_page_config(page_title="Nifty 750 Pro Engine", layout="wide")
@@ -16,7 +16,7 @@ if 'current_page' not in st.session_state:
     st.session_state.current_page = 1
 
 def next_page():
-    if st.session_state.current_page < 4: 
+    if st.session_state.current_page < 4: # UPDATED: Now supports 4 pages
         st.session_state.current_page += 1
 
 def prev_page():
@@ -24,19 +24,19 @@ def prev_page():
         st.session_state.current_page -= 1
 
 # =======================================================
-# CORE DATA ENGINE: Multi-Pass Healing Downloader
+# CORE DATA ENGINE: Master Bulk Downloader
 # =======================================================
-@st.cache_data(show_spinner=False)
+@st.cache_data 
 def fetch_market_data_bulk():
     """
-    Pass 1 executes a fast bulk download. Pass 2 audits the results 
-    and rescues any stocks dropped by Yahoo's rate limits.
+    Downloads the core historical data once. Shared across Page 1 and Page 4 
+    to prevent duplicate API calls and speed up the app.
     """
     raw_tickers = []
     industry_map = {}
     
-    #total_market_url = "https://www.niftyindices.com/IndexConstituent/ind_niftytotalmarket_list.csv"
-    total_market_url = "https://www.niftyindices.com/IndexConstituent/ind_niftymidcap50list.csv"
+    total_market_url = "https://www.niftyindices.com/IndexConstituent/ind_niftytotalmarket_list.csv"
+    #total_market_url = "https://www.niftyindices.com/IndexConstituent/ind_niftymidcap50list.csv"
     
     headers = {"User-Agent": "Mozilla/5.0"}
 
@@ -58,66 +58,37 @@ def fetch_market_data_bulk():
         industry_map = {t: "Unknown" for t in raw_tickers}                                                  
         
     tickers = [ticker if ticker.endswith('.NS') else f"{ticker}.NS" for ticker in raw_tickers]
-	
-														 
-																		  
-	
-							   
-    total_tickers = len(tickers)
     
-    # --- PASS 1: The Bulk Haul ---
-    with st.spinner(f"Pass 1: Fast bulk download of {total_tickers} stocks..."):
-        data_main = yf.download(tickers, period="2y", group_by='ticker', threads=7, progress=False)
-        
-    # --- AUDIT: Identify Dropped Stocks ---
-    if isinstance(data_main.columns, pd.MultiIndex):
-        downloaded_tickers = data_main.columns.get_level_values(0).unique().tolist()
-    else:
-        downloaded_tickers = [] if data_main.empty else [tickers[0]]
-        
-    missing_tickers = [t for t in tickers if t not in downloaded_tickers]
+    # Download 2 years of history for all tickers at once
+    data = yf.download(tickers, period="2y", group_by='ticker', threads=7)
     
-    # --- PASS 2: The Rescue Mission ---
-    if missing_tickers:
-        with st.spinner(f"Pass 2: Rescuing {len(missing_tickers)} dropped stocks..."):
-            rescue_frames = []
-            chunk_size = 20 # Small chunks to stay under the radar
-										   
-																					   
+    # Loop based data gathering
+    #total_tickers = len(tickers)
+    
+    #data_frames = []
+    #chunk_size = 50  # Download 50 stocks at a time
+    
+    #with st.spinner(f'Downloading {total_tickers} stocks in batches to prevent server blocks...'):
+    #    for i in range(0, total_tickers, chunk_size):
+    #        chunk = tickers[i : i + chunk_size]
+    #        # threads=False prevents sudden spikes in connections
+     #       chunk_data = yf.download(chunk, period="2y", group_by='ticker', threads=False, progress=False)
+      #      data_frames.append(chunk_data)
+       #     time.sleep(1) # Breathe for 1 second so Yahoo doesn't ban the Streamlit IP
             
-            for i in range(0, len(missing_tickers), chunk_size):
-                chunk = missing_tickers[i:i+chunk_size]
-                # threads=False here to prevent further rate limits on the rescue chunks
-                chunk_data = yf.download(chunk, period="2y", group_by='ticker', threads=False, progress=False)
-                
-                if not chunk_data.empty:
-                    # Fix yfinance edge case where 1 surviving stock drops the MultiIndex
-                    if not isinstance(chunk_data.columns, pd.MultiIndex):
-                        if len(chunk) == 1:
-                            chunk_data.columns = pd.MultiIndex.from_product([chunk, chunk_data.columns])
-                        else:
-                            # Fallback if multiple were requested but only 1 survived
-                            chunk_data.columns = pd.MultiIndex.from_product([[chunk[0]], chunk_data.columns])
-                    rescue_frames.append(chunk_data)
-                time.sleep(0.5) 
-                
-            if rescue_frames:
-                data_rescue = pd.concat(rescue_frames, axis=1)
-                final_data = pd.concat([data_main, data_rescue], axis=1)
-            else:
-                final_data = data_main
-    else:
-        final_data = data_main
+    # Combine all chunks back into a single dataframe
+    #data = pd.concat(data_frames, axis=1)
+   
     
-    return tickers, final_data, industry_map
+    return tickers, data, industry_map
 
 # =======================================================
 # DATA ENGINE 1: Fetching & Filtering (for Watchlist)
 # =======================================================
 @st.cache_data 
 def load_data_watchlist():
-																			
-    tickers, data, industry_map = fetch_market_data_bulk()
+    with st.spinner('Fetching market data and calculating core metrics...'):
+        tickers, data, industry_map = fetch_market_data_bulk()
         
     total_tickers = len(tickers)
     progress_text = "Fetching Fundamentals & Market Cap. Please wait..."
@@ -134,12 +105,12 @@ def load_data_watchlist():
             
             clean_symbol = ticker.replace('.NS', '')                                       
             
-														 
+            # --- UPDATED: Market Cap Stability Trick ---
             tkr = yf.Ticker(ticker)
             stock_info = tkr.info
             market_cap_raw = stock_info.get('marketCap')
             
-																					   
+            # Fallback to the lightweight 'fast_info' endpoint if the main scrape fails
             if not market_cap_raw or market_cap_raw == 0:
                 try:
                     market_cap_raw = tkr.fast_info.market_cap
@@ -181,15 +152,8 @@ def load_data_watchlist():
             pass
             
     my_bar.empty()
-    
-    # --- ANTI-CRASH FIX: Returns empty dataframe with correct columns if completely blocked ---
-    if not metrics:
-        return pd.DataFrame(columns=[
-            "Stock", "Sector", "Market Cap (Cr)", "Price", 
-            "1W Return (%)", "1M Return (%)", "3M Return (%)", 
-            "6M Return (%)", "1Y Return (%)", "Above 50 DMA?", "Above 200 DMA?"
-        ])
-        
+    if failed_tickers:
+        st.warning(f"⚠️ Could not fetch data for {len(failed_tickers)} stocks: {', '.join(failed_tickers)}")
     return pd.DataFrame(metrics)
 
 # =======================================================
@@ -270,10 +234,10 @@ def fetch_sector_constituents(sector_name):
 # =======================================================
 @st.cache_data
 def get_price_volume_history():
-	   
-																	   
-																  
-	   
+    """
+    Leverages the bulk downloaded data to calculate daily volume surges
+    and price actions for the last 30 trading days for all stocks.
+    """
     tickers, data, industry_map = fetch_market_data_bulk()
     history_records = {}
     
@@ -286,12 +250,12 @@ def get_price_volume_history():
                 close = df['Close']
                 vol = df['Volume']
                 
-																   
+                # Calculate Daily Returns and 20-Day Average Volume
                 pct_change = (close / close.shift(1) - 1) * 100
                 avg_vol = vol.rolling(window=20).mean()
                 vol_surge = vol / avg_vol
                 
-																		   
+                # Package the last 30 trading days into a history dataframe
                 df_history = pd.DataFrame({
                     'Close': close,
                     'Volume': vol,
@@ -335,68 +299,51 @@ st.divider()
 # =======================================================
 if st.session_state.current_page == 1:
     df_watchlist = load_data_watchlist()
-											 
-	
-																																			  
-																   
-																											 
-	
-																		 
-																			
+    st.sidebar.header("Filter & Rank Engine")
     
-    # --- ANTI-CRASH FIX: Stops app from crashing if data is blocked ---
-    if df_watchlist.empty:
-        st.warning("⚠️ Market data could not be loaded. Yahoo Finance may be temporarily blocking connections. Please wait a few minutes and refresh.")
-    else:
-        st.sidebar.header("Filter & Rank Engine")
-	
-									 
-																									
+    sort_options = ["Market Cap (Cr)", "1M Return (%)", "1W Return (%)", "3M Return (%)", "6M Return (%)", "1Y Return (%)", "Price", "Sector"]
+    sort_by = st.sidebar.selectbox("Rank Stocks By:", sort_options)
+    sort_order = st.sidebar.radio("Order:", ["Descending (Top Performers)", "Ascending (Bottom Performers)"])
+    
+    all_sectors = ["All"] + sorted(list(df_watchlist["Sector"].unique()))
+    selected_sector = st.sidebar.selectbox("Filter by Sector:", all_sectors)
+    
+    min_mcap = st.sidebar.number_input("Minimum Market Cap (in Crores)", min_value=0, value=0, step=500)
+    filter_dma_50 = st.sidebar.checkbox("Only show stocks Above 50 DMA")
+    filter_dma_200 = st.sidebar.checkbox("Only show stocks Above 200 DMA")
+
+    ascending = True if sort_order.startswith("Ascending") else False
+    
+    df_filtered = df_watchlist.copy()
+    if selected_sector != "All": df_filtered = df_filtered[df_filtered["Sector"] == selected_sector]
         
-        sort_options = ["Market Cap (Cr)", "1M Return (%)", "1W Return (%)", "3M Return (%)", "6M Return (%)", "1Y Return (%)", "Price", "Sector"]
-        sort_by = st.sidebar.selectbox("Rank Stocks By:", sort_options)
-        sort_order = st.sidebar.radio("Order:", ["Descending (Top Performers)", "Ascending (Bottom Performers)"])
+    base_total = len(df_filtered)
         
-        all_sectors = ["All"] + sorted(list(df_watchlist["Sector"].unique()))
-        selected_sector = st.sidebar.selectbox("Filter by Sector:", all_sectors)
-																						
+    df_filtered = df_filtered[df_filtered["Market Cap (Cr)"] >= min_mcap]
+    if filter_dma_50: df_filtered = df_filtered[df_filtered["Above 50 DMA?"] == "Yes"]
+    if filter_dma_200: df_filtered = df_filtered[df_filtered["Above 200 DMA?"] == "Yes"]
         
-        min_mcap = st.sidebar.number_input("Minimum Market Cap (in Crores)", min_value=0, value=0, step=500)
-        filter_dma_50 = st.sidebar.checkbox("Only show stocks Above 50 DMA")
-        filter_dma_200 = st.sidebar.checkbox("Only show stocks Above 200 DMA")
-    
-        ascending = True if sort_order.startswith("Ascending") else False
-        
-        df_filtered = df_watchlist.copy()
-        if selected_sector != "All": df_filtered = df_filtered[df_filtered["Sector"] == selected_sector]
-            
-        base_total = len(df_filtered)
-            
-        df_filtered = df_filtered[df_filtered["Market Cap (Cr)"] >= min_mcap]
-        if filter_dma_50: df_filtered = df_filtered[df_filtered["Above 50 DMA?"] == "Yes"]
-        if filter_dma_200: df_filtered = df_filtered[df_filtered["Above 200 DMA?"] == "Yes"]
-            
-        df_sorted = df_filtered.sort_values(by=sort_by, ascending=ascending).reset_index(drop=True)
-        df_sorted.index = df_sorted.index + 1
-    
-        filtered_total = len(df_sorted)
-        percentage = (filtered_total / base_total * 100) if base_total > 0 else 0
-    
-        st.markdown(
-            f"<div style='text-align: right; font-size: 16px; font-weight: bold; padding-bottom: 10px;'>"
-            f"Matches: <span style='color: #4CAF50;'>{filtered_total}</span> / {base_total} "
-            f"(<span style='color: #4CAF50;'>{percentage:.1f}%</span>) of base</div>", 
-            unsafe_allow_html=True
-        )
-    
-        st.dataframe(df_sorted.style.format(
-            formatter={
-                "Market Cap (Cr)": "{:,.2f}", 
-                "Price": "{:,.2f}", 
-                "1W Return (%)": "{:.2f}%", "1M Return (%)": "{:.2f}%",
-                "3M Return (%)": "{:.2f}%", "6M Return (%)": "{:.2f}%", "1Y Return (%)": "{:.2f}%",
-            }, na_rep="-"
-        ), use_container_width=True, height=600)
+    df_sorted = df_filtered.sort_values(by=sort_by, ascending=ascending).reset_index(drop=True)
+    df_sorted.index = df_sorted.index + 1
+
+    filtered_total = len(df_sorted)
+    percentage = (filtered_total / base_total * 100) if base_total > 0 else 0
+
+    st.markdown(
+        f"<div style='text-align: right; font-size: 16px; font-weight: bold; padding-bottom: 10px;'>"
+        f"Matches: <span style='color: #4CAF50;'>{filtered_total}</span> / {base_total} "
+        f"(<span style='color: #4CAF50;'>{percentage:.1f}%</span>) of base</div>", 
+        unsafe_allow_html=True
+    )
+
+    st.dataframe(df_sorted.style.format(
+        formatter={
+            "Market Cap (Cr)": "{:,.2f}", 
+            "Price": "{:,.2f}", # UPDATED: Limits Price to 2 decimals
+            "1W Return (%)": "{:.2f}%", "1M Return (%)": "{:.2f}%",
+            "3M Return (%)": "{:.2f}%", "6M Return (%)": "{:.2f}%", "1Y Return (%)": "{:.2f}%",
+        }, na_rep="-"
+    ), use_container_width=True, height=600)
 
 # =======================================================
 # PAGE 2: NIFTY BROAD INDICES
@@ -477,9 +424,9 @@ elif st.session_state.current_page == 3:
         fig_sectors.update_layout(showlegend=False, xaxis_title="", yaxis_title=selected_timeframe_sector, height=600)
         st.plotly_chart(fig_sectors, use_container_width=True)
         
-																	   
-																 
-																	   
+        # -------------------------------------------------------------
+        # DRILL-DOWN WITH CHECKBOXES & 9-COLOR Z-SCORE FORMATTING
+        # -------------------------------------------------------------
         st.divider()
         st.subheader("🔍 Deep Dive: Sector Constituents")
         
@@ -535,7 +482,7 @@ elif st.session_state.current_page == 3:
                 styled_df = df_drilled_sorted.style.apply(apply_z_colors, axis=0).format(
                     formatter={
                         "Market Cap (Cr)": "{:,.2f}", 
-                        "Price": "{:,.2f}", 
+                        "Price": "{:,.2f}", # UPDATED: Limits Price to 2 decimals
                         "1W Return (%)": "{:.2f}%", "1M Return (%)": "{:.2f}%",
                         "3M Return (%)": "{:.2f}%", "6M Return (%)": "{:.2f}%", "1Y Return (%)": "{:.2f}%"
                     }, na_rep="-"
@@ -554,44 +501,44 @@ elif st.session_state.current_page == 3:
 elif st.session_state.current_page == 4:
     st.sidebar.header("Price-Volume Parameters")
     
-																							  
+    # 1. Load the pre-calculated daily history (Uses cached bulk data so it's incredibly fast)
     history_records = get_price_volume_history()
     
     if not history_records:
         st.warning("⚠️ Market data is still initializing or unavailable.")
     else:
-																		   
+        # Extract available historical dates from the first available stock
         first_stock = list(history_records.keys())[0]
         available_dates = history_records[first_stock]['History'].index.strftime('%Y-%m-%d').tolist()
         
-										 
+        # 2. UI Controls for the Screener
         selected_date_str = st.sidebar.selectbox("Select Target Date:", sorted(available_dates, reverse=True))
         
-							  
+        # Threshold selections
         vol_multiplier = st.sidebar.number_input("Minimum Volume Surge (x Usual)", min_value=1.0, value=2.0, step=0.5)
         price_surge_pct = st.sidebar.number_input("Minimum Price Surge (%)", min_value=0.5, value=3.0, step=0.5)
         
         results = []
         
-												
+        # 3. Process the logic across all stocks
         for stock, info in history_records.items():
             df_hist = info['History']
             
-																	 
+            # Convert DatetimeIndex to string for easy exact matching
             df_hist_str = df_hist.copy()
             df_hist_str.index = df_hist_str.index.strftime('%Y-%m-%d')
             
             if selected_date_str in df_hist_str.index:
                 row = df_hist_str.loc[selected_date_str]
                 
-																			
+                # Check if the stock meets the criteria ON the selected date
                 if row['Pct_Change'] >= price_surge_pct and row['Vol_Surge'] >= vol_multiplier:
                     
-																								  
+                    # 4. Extract exactly which dates triggered this criteria over the last 30 days
                     action_dates_df = df_hist_str[(df_hist_str['Pct_Change'] >= price_surge_pct) & (df_hist_str['Vol_Surge'] >= vol_multiplier)]
                     action_count = len(action_dates_df)
                     
-																		 
+                    # Create the formatted string: "Count (Date1, Date2)"
                     dates_str = ", ".join(action_dates_df.index.tolist())
                     display_val = f"{action_count} ({dates_str})"
                     
@@ -603,22 +550,22 @@ elif st.session_state.current_page == 4:
                         "20D Avg Volume": row['Avg_Volume'],
                         "Volume Surge (x)": row['Vol_Surge'],
                         "Price Change (%)": row['Pct_Change'],
-                        "Action Count (Last 30 Days)": display_val  
+                        "Action Count (Last 30 Days)": display_val  # Injecting the new string format here
                     })
                     
-							   
+        # 5. Render the Results
         if results:
             df_results = pd.DataFrame(results)
-													  
+            # Sort by the most aggressive volume surge
             df_results = df_results.sort_values(by="Volume Surge (x)", ascending=False).reset_index(drop=True)
             df_results.index = df_results.index + 1
             
             st.markdown(f"### Stocks showing Price-Volume Action on **{selected_date_str}**")
             st.markdown(f"> **Criteria Met:** Price increased by **≥ {price_surge_pct}%** |  Volume was **≥ {vol_multiplier}x** its 20-Day Average")
             
-										  
+            # Format and display the table
             st.dataframe(df_results.style.format({
-                "Close Price": "{:,.2f}", 
+                "Close Price": "{:,.2f}", # UPDATED: Commas and limited to 2 decimals
                 "Volume": "{:,.0f}",
                 "20D Avg Volume": "{:,.0f}",
                 "Volume Surge (x)": "{:.2f}x",
