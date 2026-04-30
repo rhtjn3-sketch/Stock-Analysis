@@ -57,6 +57,8 @@ def update_market_data():
         
         # Save to a highly compressed file format
         final_data.to_parquet("nifty_750_master.parquet", engine="pyarrow")
+        # Save to CSV instead
+        final_data.to_csv("nifty_750_master.csv")
         print("✅ SUCCESS! nifty_750_master.parquet has been updated.")
     else:
         print("❌ FAILED to download any data.")
