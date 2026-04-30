@@ -1,13 +1,11 @@
 import streamlit as st
 import yfinance as yf
-import plotly.express as px  
 import pandas as pd
 import numpy as np
 import requests
 import io
 import time
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+import plotly.express as px  
 
 st.set_page_config(page_title="Nifty 750 Pro Engine", layout="wide")
 
@@ -25,41 +23,25 @@ def prev_page():
     if st.session_state.current_page > 1:
         st.session_state.current_page -= 1
 
-# --- 1. THE ROBUST HTTP SESSION ---
-def get_robust_yf_session():
-    """Creates a requests Session with browser headers and automatic exponential backoff."""
-    session = requests.Session()
-    # Spoof a standard browser to avoid immediate datacenter bot flagging
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    })
-    
-    # Automatic Retry Strategy: catches 429 (Rate Limit) and server errors.
-    # Backoff factor 1 means it will wait 1s, 2s, 4s, 8s between retries.
-    retry = Retry(
-        total=5, 
-        backoff_factor=1, 
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["HEAD", "GET", "OPTIONS"]
-    )
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    
-    return session
-
-# --- 2. THE BULLETPROOF DOWNLOADER ---
-@st.cache_data(show_spinner=False)
+# =======================================================
+# CORE DATA ENGINE: Master Bulk Downloader
+# =======================================================
+@st.cache_data 
 def fetch_market_data_bulk():
+    """
+    Downloads the core historical data once. Shared across Page 1 and Page 4 
+    to prevent duplicate API calls and speed up the app.
+    """
     raw_tickers = []
     industry_map = {}
     
-    total_market_url = "https://www.niftyindices.com/IndexConstituent/ind_niftytotalmarket_list.csv"
-    #total_market_url = "https://www.niftyindices.com/IndexConstituent/ind_niftymidcap50list.csv"
+    #total_market_url = "https://www.niftyindices.com/IndexConstituent/ind_niftytotalmarket_list.csv"
+    total_market_url = "https://www.niftyindices.com/IndexConstituent/ind_niftymidcap50list.csv"
     
+    headers = {"User-Agent": "Mozilla/5.0"}
+
     try:
-        res = requests.get(total_market_url, headers={"User-Agent": "Mozilla/5.0"})
+        res = requests.get(total_market_url, headers=headers)
         df_raw = pd.read_csv(io.StringIO(res.text))
         df_raw.columns = df_raw.columns.str.strip()
         df_raw['Symbol'] = df_raw['Symbol'].astype(str).str.strip()
@@ -68,7 +50,7 @@ def fetch_market_data_bulk():
             df_raw['Industry'] = df_raw['Industry'].astype(str).str.strip()
             industry_map = dict(zip(df_raw['Symbol'], df_raw['Industry']))                                                    
         raw_tickers = df_raw['Symbol'].dropna().unique().tolist()
-    except Exception:
+    except Exception as e:
         pass
     
     if not raw_tickers:
@@ -76,73 +58,29 @@ def fetch_market_data_bulk():
         industry_map = {t: "Unknown" for t in raw_tickers}                                                  
         
     tickers = [ticker if ticker.endswith('.NS') else f"{ticker}.NS" for ticker in raw_tickers]
-    total_tickers = len(tickers)
     
-    session = get_robust_yf_session()
-    data_frames = []
+    # Download 2 years of history for all tickers at once
+    data = yf.download(tickers, period="2y", group_by='ticker', threads=7)
     
-    # Using batches of 20 is the sweet spot for Streamlit's IP reputation
-    chunk_size = 20  
+    # Loop based data gathering
+    #total_tickers = len(tickers)
     
-    progress_bar = st.progress(0, text="Initializing Bulletproof Download Engine...")
+    #data_frames = []
+    #chunk_size = 50  # Download 50 stocks at a time
     
-    for i in range(0, total_tickers, chunk_size):
-        chunk = tickers[i : i + chunk_size]
-        chunk_success = False
-        max_chunk_retries = 3
-        
-        progress_text = f"Fetching batch {(i//chunk_size) + 1}/{(total_tickers//chunk_size) + 1} ({len(data_frames)*chunk_size} stocks secured)..."
-        progress_bar.progress(min(i / total_tickers, 1.0), text=progress_text)
-        
-        # ATTEMPT 1: Bulk download the chunk
-        for attempt in range(max_chunk_retries):
-            try:
-                # threads=False is strictly required on cloud deployments
-                chunk_data = yf.download(
-                    chunk, period="2y", group_by='ticker', 
-                    threads=False, session=session, progress=False
-                )
-                
-                # Validation: Did Yahoo shadow-block us and return an empty file?
-                if not chunk_data.empty:
-                    data_frames.append(chunk_data)
-                    chunk_success = True
-                    break  # Success! Break the retry loop
-                else:
-                    time.sleep(2 ** attempt) # Blocked. Sleep exponentially (1s, 2s, 4s)
-                    
-            except Exception:
-                time.sleep(2 ** attempt)
-        
-        # ATTEMPT 2: Fallback to single-ticker extraction
-        if not chunk_success:
-            for single_ticker in chunk:
-                try:
-                    single_data = yf.download(
-                        [single_ticker], period="2y", group_by='ticker', 
-                        threads=False, session=session, progress=False
-                    )
-                    if not single_data.empty:
-                        # FIX: Force MultiIndex formatting so pd.concat doesn't corrupt the master database
-                        if not isinstance(single_data.columns, pd.MultiIndex):
-                            single_data.columns = pd.MultiIndex.from_product([[single_ticker], single_data.columns])
-                        data_frames.append(single_data)
-                except Exception:
-                    pass 
-                time.sleep(0.5) # Micro-pause between singles
-                
-        # Mandatory cooldown between chunks to respect API limits
-        time.sleep(1.5)
-
-    progress_bar.empty()
+    #with st.spinner(f'Downloading {total_tickers} stocks in batches to prevent server blocks...'):
+    #    for i in range(0, total_tickers, chunk_size):
+    #        chunk = tickers[i : i + chunk_size]
+    #        # threads=False prevents sudden spikes in connections
+     #       chunk_data = yf.download(chunk, period="2y", group_by='ticker', threads=False, progress=False)
+      #      data_frames.append(chunk_data)
+       #     time.sleep(1) # Breathe for 1 second so Yahoo doesn't ban the Streamlit IP
+            
+    # Combine all chunks back into a single dataframe
+    #data = pd.concat(data_frames, axis=1)
+   
     
-    # CONSOLIDATE DATA
-    if data_frames:
-        # Join all safely extracted chunks into the master dataframe
-        final_data = pd.concat(data_frames, axis=1)
-        return tickers, final_data, industry_map
-    else:
-        return tickers, pd.DataFrame(), industry_map
+    return tickers, data, industry_map
 
 # =======================================================
 # DATA ENGINE 1: Fetching & Filtering (for Watchlist)
@@ -184,7 +122,7 @@ def load_data_watchlist():
             if market_cap_raw is None or market_cap_raw == 0: 
                 market_cap_cr = 0.0
             else: 
-                market_cap_cr = round(market_cap_raw / 10000000, 0)
+                market_cap_cr = round(market_cap_raw / 10000000, 2)
             
             current_price = df['Close'].iloc[-1]
             
@@ -215,16 +153,7 @@ def load_data_watchlist():
             
     my_bar.empty()
     if failed_tickers:
-        st.warning(f"⚠️ Could not fetch data for {len(failed_tickers)} stocks.")
-        
-    # FIX: If all downloads fail, return an empty dataframe with the exact expected columns
-    if not metrics:
-        return pd.DataFrame(columns=[
-            "Stock", "Sector", "Market Cap (Cr)", "Price", 
-            "1W Return (%)", "1M Return (%)", "3M Return (%)", 
-            "6M Return (%)", "1Y Return (%)", "Above 50 DMA?", "Above 200 DMA?"
-        ])
-        
+        st.warning(f"⚠️ Could not fetch data for {len(failed_tickers)} stocks: {', '.join(failed_tickers)}")
     return pd.DataFrame(metrics)
 
 # =======================================================
@@ -371,11 +300,6 @@ st.divider()
 if st.session_state.current_page == 1:
     df_watchlist = load_data_watchlist()
     st.sidebar.header("Filter & Rank Engine")
-	# FIX: Show a friendly error instead of crashing if Yahoo blocked the connection
-    if df_watchlist.empty:
-        st.error("⚠️ Market data could not be loaded. Yahoo Finance may be temporarily blocking the server's IP. Please wait a few minutes and refresh the app.")
-    else:
-        st.sidebar.header("Filter & Rank Engine")
     
     sort_options = ["Market Cap (Cr)", "1M Return (%)", "1W Return (%)", "3M Return (%)", "6M Return (%)", "1Y Return (%)", "Price", "Sector"]
     sort_by = st.sidebar.selectbox("Rank Stocks By:", sort_options)
@@ -414,7 +338,7 @@ if st.session_state.current_page == 1:
 
     st.dataframe(df_sorted.style.format(
         formatter={
-            "Market Cap (Cr)": "{:,.0f}", 
+            "Market Cap (Cr)": "{:,.2f}", 
             "Price": "{:,.2f}", # UPDATED: Limits Price to 2 decimals
             "1W Return (%)": "{:.2f}%", "1M Return (%)": "{:.2f}%",
             "3M Return (%)": "{:.2f}%", "6M Return (%)": "{:.2f}%", "1Y Return (%)": "{:.2f}%",
@@ -557,7 +481,7 @@ elif st.session_state.current_page == 3:
                 
                 styled_df = df_drilled_sorted.style.apply(apply_z_colors, axis=0).format(
                     formatter={
-                        "Market Cap (Cr)": "{:,.0f}", 
+                        "Market Cap (Cr)": "{:,.2f}", 
                         "Price": "{:,.2f}", # UPDATED: Limits Price to 2 decimals
                         "1W Return (%)": "{:.2f}%", "1M Return (%)": "{:.2f}%",
                         "3M Return (%)": "{:.2f}%", "6M Return (%)": "{:.2f}%", "1Y Return (%)": "{:.2f}%"
