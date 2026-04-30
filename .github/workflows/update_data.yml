@@ -3,7 +3,7 @@ name: Daily Market Data Fetch
 # Run at 10:30 AM UTC (which is 4:00 PM IST), Monday to Friday
 on:
   schedule:
-    - cron: '45 7 * * 1-5'
+    - cron: '25 8 * * 1-5'
   workflow_dispatch: # Allows you to trigger it manually via button
 
 jobs:
