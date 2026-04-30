@@ -277,7 +277,6 @@ def fetch_live_quotes(tickers):
         
         for t in tickers:
             try:
-                # Handle yfinance's column structure
                 if len(tickers) > 1:
                     stock_df = df_live[t]
                 else:
@@ -296,6 +295,28 @@ def fetch_live_quotes(tickers):
             
     return live_data
 
+def extrapolate_intraday_volume(current_volume):
+    """Projects what the End-of-Day volume will be based on the current time."""
+    ist = pytz.timezone('Asia/Kolkata')
+    now = datetime.now(ist)
+    
+    market_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
+    market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    
+    # If outside market hours, actual volume is the final volume
+    if now < market_open or now >= market_close:
+        return current_volume
+        
+    elapsed_time = now - market_open
+    elapsed_minutes = elapsed_time.total_seconds() / 60.0
+    
+    if elapsed_minutes < 1: 
+        elapsed_minutes = 1
+        
+    total_market_minutes = 375.0
+    run_rate_multiplier = total_market_minutes / elapsed_minutes
+    
+    return current_volume * run_rate_multiplier
 
 # ==========================================
 # UI: TOP NAVIGATION BAR
