@@ -7,19 +7,17 @@ import io
 import time
 import plotly.express as px  
 import concurrent.futures
-from datetime import datetime
-import pytz # <--- NEW IMPORT
 
 st.set_page_config(page_title="Nifty 750 Pro Engine", layout="wide")
 
 # ==========================================
-# PAGE ROUTING SYSTEM (Next/Previous Logic)
+# PAGE ROUTING SYSTEM
 # ==========================================
 if 'current_page' not in st.session_state:
     st.session_state.current_page = 1
 
 def next_page():
-    if st.session_state.current_page < 4: # UPDATED: Now supports 4 pages
+    if st.session_state.current_page < 4:
         st.session_state.current_page += 1
 
 def prev_page():
@@ -27,21 +25,96 @@ def prev_page():
         st.session_state.current_page -= 1
 
 # =======================================================
+# MANUAL DATA REFRESH FUNCTION (The "Ghost Worker")
+# =======================================================
+def trigger_manual_data_refresh():
+    """Runs the robust data_fetcher logic directly inside Streamlit when the user requests it."""
+    st.sidebar.info("Step 1: Fetching Nifty Universe...")
+    raw_tickers = []
+    total_market_url = "https://www.niftyindices.com/IndexConstituent/ind_niftytotalmarket_list.csv"
+    
+    try:
+        res = requests.get(total_market_url, headers={"User-Agent": "Mozilla/5.0"})
+        df_raw = pd.read_csv(io.StringIO(res.text))
+        df_raw.columns = df_raw.columns.str.strip()
+        df_raw['Symbol'] = df_raw['Symbol'].astype(str).str.strip()
+        raw_tickers = df_raw['Symbol'].dropna().unique().tolist()
+    except Exception as e:
+        pass
+    
+    if not raw_tickers:
+        raw_tickers = ["RELIANCE", "TCS", "HDFCBANK", "ZOMATO"]
+        
+    tickers = [ticker if ticker.endswith('.NS') else f"{ticker}.NS" for ticker in raw_tickers]
+    total_tickers = len(tickers)
+    
+    st.sidebar.info(f"Step 2: Securely downloading {total_tickers} stocks...")
+    data_frames = []
+    
+    def download_single(ticker):
+        for attempt in range(3): # 3 retries per stock to guarantee data
+            try:
+                df = yf.Ticker(ticker).history(period="2y")
+                if not df.empty:
+                    df.columns = pd.MultiIndex.from_product([[ticker], df.columns])
+                    return df
+            except Exception:
+                pass
+            time.sleep(1)
+        return None
+
+    progress_bar = st.sidebar.progress(0)
+    completed = 0
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(download_single, t) for t in tickers]
+        for future in concurrent.futures.as_completed(futures):
+            res = future.result()
+            if res is not None:
+                data_frames.append(res)
+            completed += 1
+            progress_bar.progress(completed / total_tickers)
+
+    if data_frames:
+        st.sidebar.info("Step 3: Compiling Parquet file...")
+        final_data = pd.concat(data_frames, axis=1)
+        final_data.to_parquet("nifty_750_master.parquet", engine="pyarrow")
+        return True
+    else:
+        return False
+
+# ==========================================
+# UI: GLOBAL SIDEBAR (Data Management)
+# ==========================================
+st.sidebar.header("⚙️ Data Management")
+st.sidebar.write("Update market data on-demand.")
+
+if st.sidebar.button("🔄 Force Refresh Data", use_container_width=True):
+    with st.spinner("Executing secure data refresh... This will take a few minutes."):
+        success = trigger_manual_data_refresh()
+        
+    if success:
+        st.sidebar.success("✅ Data successfully updated!")
+        st.cache_data.clear() # Wipe the old data from memory
+        time.sleep(2)
+        st.rerun() # Refresh the app automatically
+    else:
+        st.sidebar.error("❌ Failed to fetch data. Yahoo might be temporarily blocking the IP. Try again later.")
+
+st.sidebar.divider()
+
+# =======================================================
 # CORE DATA ENGINE: Decoupled Parquet Reader
 # =======================================================
 @st.cache_data(show_spinner=False)
 def fetch_market_data_bulk():
-    """
-    Reads the pre-downloaded Parquet file instead of hitting Yahoo Finance.
-    Instantly loads all 750 stocks.
-    """
+    """Reads the pre-downloaded Parquet file instantly."""
     raw_tickers = []
     industry_map = {}
     
     total_market_url = "https://www.niftyindices.com/IndexConstituent/ind_niftytotalmarket_list.csv"
     headers = {"User-Agent": "Mozilla/5.0"}
 
-    # 1. Grab the latest Industry Map (Takes 0.5 seconds)
     try:
         res = requests.get(total_market_url, headers=headers)
         df_raw = pd.read_csv(io.StringIO(res.text))
@@ -61,11 +134,10 @@ def fetch_market_data_bulk():
         
     tickers = [ticker if ticker.endswith('.NS') else f"{ticker}.NS" for ticker in raw_tickers]
     
-    # 2. INSTANTLY load the heavy market data from the local file
     try:
         final_data = pd.read_parquet("nifty_750_master.parquet")
     except FileNotFoundError:
-        st.error("⚠️ Data file not found! Please run data_fetcher.py first.")
+        st.error("⚠️ Data file not found! Please click 'Force Refresh Data' in the sidebar.")
         final_data = pd.DataFrame()
         
     return tickers, final_data, industry_map
@@ -75,11 +147,13 @@ def fetch_market_data_bulk():
 # =======================================================
 @st.cache_data 
 def load_data_watchlist():
-    with st.spinner('Fetching market data and calculating core metrics...'):
-        tickers, data, industry_map = fetch_market_data_bulk()
+    tickers, data, industry_map = fetch_market_data_bulk()
+    
+    if data.empty:
+        return pd.DataFrame()
         
     total_tickers = len(tickers)
-    progress_text = "Fetching Fundamentals & Market Cap. Please wait..."
+    progress_text = "Parsing fundamentals..."
     my_bar = st.progress(0, text=progress_text)
     
     metrics = []
@@ -93,12 +167,10 @@ def load_data_watchlist():
             
             clean_symbol = ticker.replace('.NS', '')                                       
             
-            # --- UPDATED: Market Cap Stability Trick ---
             tkr = yf.Ticker(ticker)
             stock_info = tkr.info
             market_cap_raw = stock_info.get('marketCap')
             
-            # Fallback to the lightweight 'fast_info' endpoint if the main scrape fails
             if not market_cap_raw or market_cap_raw == 0:
                 try:
                     market_cap_raw = tkr.fast_info.market_cap
@@ -140,8 +212,6 @@ def load_data_watchlist():
             pass
             
     my_bar.empty()
-    if failed_tickers:
-        st.warning(f"⚠️ Could not fetch data for {len(failed_tickers)} stocks: {', '.join(failed_tickers)}")
     return pd.DataFrame(metrics)
 
 # =======================================================
@@ -222,12 +292,11 @@ def fetch_sector_constituents(sector_name):
 # =======================================================
 @st.cache_data
 def get_price_volume_history():
-    """
-    Leverages the bulk downloaded data to calculate daily volume surges
-    and price actions for the last 30 trading days for all stocks.
-    """
     tickers, data, industry_map = fetch_market_data_bulk()
     history_records = {}
+    
+    if data.empty:
+        return history_records
     
     with st.spinner("Calculating 30-Day Historical Price & Volume signals..."):
         for ticker in tickers:
@@ -238,12 +307,10 @@ def get_price_volume_history():
                 close = df['Close']
                 vol = df['Volume']
                 
-                # Calculate Daily Returns and 20-Day Average Volume
                 pct_change = (close / close.shift(1) - 1) * 100
                 avg_vol = vol.rolling(window=20).mean()
                 vol_surge = vol / avg_vol
                 
-                # Package the last 30 trading days into a history dataframe
                 df_history = pd.DataFrame({
                     'Close': close,
                     'Volume': vol,
@@ -261,62 +328,6 @@ def get_price_volume_history():
                 pass
                 
     return history_records
-  
-
-# =======================================================
-# LIVE DATA LAYER: 15-Minute Auto-Refresh & Extrapolation
-# =======================================================
-@st.cache_data(ttl=900, show_spinner=False)
-def fetch_live_quotes(tickers):
-    """Bulk fetches ONLY the current day's price and volume to minimize API load."""
-    live_data = {}
-    
-    # A single bulk request for 1-day data is much safer than 750 individual calls
-    try:
-        df_live = yf.download(tickers, period="1d", group_by='ticker', threads=5, progress=False)
-        
-        for t in tickers:
-            try:
-                if len(tickers) > 1:
-                    stock_df = df_live[t]
-                else:
-                    stock_df = df_live
-                    
-                stock_df = stock_df.dropna()
-                if not stock_df.empty:
-                    live_data[t] = {
-                        'Live_Price': float(stock_df['Close'].iloc[-1]),
-                        'Live_Volume': float(stock_df['Volume'].iloc[-1])
-                    }
-            except Exception:
-                pass
-    except Exception as e:
-        pass
-            
-    return live_data
-
-def extrapolate_intraday_volume(current_volume):
-    """Projects what the End-of-Day volume will be based on the current time."""
-    ist = pytz.timezone('Asia/Kolkata')
-    now = datetime.now(ist)
-    
-    market_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
-    market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
-    
-    # If outside market hours, actual volume is the final volume
-    if now < market_open or now >= market_close:
-        return current_volume
-        
-    elapsed_time = now - market_open
-    elapsed_minutes = elapsed_time.total_seconds() / 60.0
-    
-    if elapsed_minutes < 1: 
-        elapsed_minutes = 1
-        
-    total_market_minutes = 375.0
-    run_rate_multiplier = total_market_minutes / elapsed_minutes
-    
-    return current_volume * run_rate_multiplier
 
 # ==========================================
 # UI: TOP NAVIGATION BAR
@@ -343,51 +354,55 @@ st.divider()
 # =======================================================
 if st.session_state.current_page == 1:
     df_watchlist = load_data_watchlist()
-    st.sidebar.header("Filter & Rank Engine")
     
-    sort_options = ["Market Cap (Cr)", "1M Return (%)", "1W Return (%)", "3M Return (%)", "6M Return (%)", "1Y Return (%)", "Price", "Sector"]
-    sort_by = st.sidebar.selectbox("Rank Stocks By:", sort_options)
-    sort_order = st.sidebar.radio("Order:", ["Descending (Top Performers)", "Ascending (Bottom Performers)"])
-    
-    all_sectors = ["All"] + sorted(list(df_watchlist["Sector"].unique()))
-    selected_sector = st.sidebar.selectbox("Filter by Sector:", all_sectors)
-    
-    min_mcap = st.sidebar.number_input("Minimum Market Cap (in Crores)", min_value=0, value=0, step=500)
-    filter_dma_50 = st.sidebar.checkbox("Only show stocks Above 50 DMA")
-    filter_dma_200 = st.sidebar.checkbox("Only show stocks Above 200 DMA")
-
-    ascending = True if sort_order.startswith("Ascending") else False
-    
-    df_filtered = df_watchlist.copy()
-    if selected_sector != "All": df_filtered = df_filtered[df_filtered["Sector"] == selected_sector]
+    if df_watchlist.empty:
+        st.warning("⚠️ No data available to display. Please click 'Force Refresh Data' in the sidebar.")
+    else:
+        st.sidebar.header("Filter & Rank Engine")
         
-    base_total = len(df_filtered)
+        sort_options = ["Market Cap (Cr)", "1M Return (%)", "1W Return (%)", "3M Return (%)", "6M Return (%)", "1Y Return (%)", "Price", "Sector"]
+        sort_by = st.sidebar.selectbox("Rank Stocks By:", sort_options)
+        sort_order = st.sidebar.radio("Order:", ["Descending (Top Performers)", "Ascending (Bottom Performers)"])
         
-    df_filtered = df_filtered[df_filtered["Market Cap (Cr)"] >= min_mcap]
-    if filter_dma_50: df_filtered = df_filtered[df_filtered["Above 50 DMA?"] == "Yes"]
-    if filter_dma_200: df_filtered = df_filtered[df_filtered["Above 200 DMA?"] == "Yes"]
+        all_sectors = ["All"] + sorted(list(df_watchlist["Sector"].unique()))
+        selected_sector = st.sidebar.selectbox("Filter by Sector:", all_sectors)
         
-    df_sorted = df_filtered.sort_values(by=sort_by, ascending=ascending).reset_index(drop=True)
-    df_sorted.index = df_sorted.index + 1
+        min_mcap = st.sidebar.number_input("Minimum Market Cap (in Crores)", min_value=0, value=0, step=500)
+        filter_dma_50 = st.sidebar.checkbox("Only show stocks Above 50 DMA")
+        filter_dma_200 = st.sidebar.checkbox("Only show stocks Above 200 DMA")
 
-    filtered_total = len(df_sorted)
-    percentage = (filtered_total / base_total * 100) if base_total > 0 else 0
+        ascending = True if sort_order.startswith("Ascending") else False
+        
+        df_filtered = df_watchlist.copy()
+        if selected_sector != "All": df_filtered = df_filtered[df_filtered["Sector"] == selected_sector]
+            
+        base_total = len(df_filtered)
+            
+        df_filtered = df_filtered[df_filtered["Market Cap (Cr)"] >= min_mcap]
+        if filter_dma_50: df_filtered = df_filtered[df_filtered["Above 50 DMA?"] == "Yes"]
+        if filter_dma_200: df_filtered = df_filtered[df_filtered["Above 200 DMA?"] == "Yes"]
+            
+        df_sorted = df_filtered.sort_values(by=sort_by, ascending=ascending).reset_index(drop=True)
+        df_sorted.index = df_sorted.index + 1
 
-    st.markdown(
-        f"<div style='text-align: right; font-size: 16px; font-weight: bold; padding-bottom: 10px;'>"
-        f"Matches: <span style='color: #4CAF50;'>{filtered_total}</span> / {base_total} "
-        f"(<span style='color: #4CAF50;'>{percentage:.1f}%</span>) of base</div>", 
-        unsafe_allow_html=True
-    )
+        filtered_total = len(df_sorted)
+        percentage = (filtered_total / base_total * 100) if base_total > 0 else 0
 
-    st.dataframe(df_sorted.style.format(
-        formatter={
-            "Market Cap (Cr)": "{:,.2f}", 
-            "Price": "{:,.2f}", # UPDATED: Limits Price to 2 decimals
-            "1W Return (%)": "{:.2f}%", "1M Return (%)": "{:.2f}%",
-            "3M Return (%)": "{:.2f}%", "6M Return (%)": "{:.2f}%", "1Y Return (%)": "{:.2f}%",
-        }, na_rep="-"
-    ), use_container_width=True, height=600)
+        st.markdown(
+            f"<div style='text-align: right; font-size: 16px; font-weight: bold; padding-bottom: 10px;'>"
+            f"Matches: <span style='color: #4CAF50;'>{filtered_total}</span> / {base_total} "
+            f"(<span style='color: #4CAF50;'>{percentage:.1f}%</span>) of base</div>", 
+            unsafe_allow_html=True
+        )
+
+        st.dataframe(df_sorted.style.format(
+            formatter={
+                "Market Cap (Cr)": "{:,.2f}", 
+                "Price": "{:,.2f}", 
+                "1W Return (%)": "{:.2f}%", "1M Return (%)": "{:.2f}%",
+                "3M Return (%)": "{:.2f}%", "6M Return (%)": "{:.2f}%", "1Y Return (%)": "{:.2f}%",
+            }, na_rep="-"
+        ), use_container_width=True, height=600)
 
 # =======================================================
 # PAGE 2: NIFTY BROAD INDICES
@@ -468,9 +483,6 @@ elif st.session_state.current_page == 3:
         fig_sectors.update_layout(showlegend=False, xaxis_title="", yaxis_title=selected_timeframe_sector, height=600)
         st.plotly_chart(fig_sectors, use_container_width=True)
         
-        # -------------------------------------------------------------
-        # DRILL-DOWN WITH CHECKBOXES & 9-COLOR Z-SCORE FORMATTING
-        # -------------------------------------------------------------
         st.divider()
         st.subheader("🔍 Deep Dive: Sector Constituents")
         
@@ -478,7 +490,7 @@ elif st.session_state.current_page == 3:
         constituent_symbols = fetch_sector_constituents(drill_sector)
         df_master = load_data_watchlist()
         
-        if constituent_symbols:
+        if constituent_symbols and not df_master.empty:
             df_drilled = df_master[df_master['Stock'].isin(constituent_symbols)].copy()
             
             if not df_drilled.empty:
@@ -526,7 +538,7 @@ elif st.session_state.current_page == 3:
                 styled_df = df_drilled_sorted.style.apply(apply_z_colors, axis=0).format(
                     formatter={
                         "Market Cap (Cr)": "{:,.2f}", 
-                        "Price": "{:,.2f}", # UPDATED: Limits Price to 2 decimals
+                        "Price": "{:,.2f}", 
                         "1W Return (%)": "{:.2f}%", "1M Return (%)": "{:.2f}%",
                         "3M Return (%)": "{:.2f}%", "6M Return (%)": "{:.2f}%", "1Y Return (%)": "{:.2f}%"
                     }, na_rep="-"
@@ -540,7 +552,7 @@ elif st.session_state.current_page == 3:
         st.warning("⚠️ Could not load data for Nifty Sectoral Indices.")
 
 # =======================================================
-# PAGE 4: PRICE-VOLUME ACTION SCREENER (LIVE & HISTORICAL)
+# PAGE 4: PRICE-VOLUME ACTION SCREENER
 # =======================================================
 elif st.session_state.current_page == 4:
     st.sidebar.header("Price-Volume Parameters")
@@ -548,130 +560,61 @@ elif st.session_state.current_page == 4:
     history_records = get_price_volume_history()
     
     if not history_records:
-        st.warning("⚠️ Market data is still initializing or unavailable.")
+        st.warning("⚠️ Market data is empty. Please click 'Force Refresh Data' in the sidebar.")
     else:
-        # Extract available historical dates
         first_stock = list(history_records.keys())[0]
-        historical_dates = sorted(history_records[first_stock]['History'].index.strftime('%Y-%m-%d').tolist(), reverse=True)
+        available_dates = history_records[first_stock]['History'].index.strftime('%Y-%m-%d').tolist()
         
-        # Add "Today (Live)" to the top of the dropdown options
-        dropdown_options = ["Today (Live 15m Refresh)"] + historical_dates
-        selected_date_str = st.sidebar.selectbox("Select Target Date:", dropdown_options)
+        selected_date_str = st.sidebar.selectbox("Select Target Date:", sorted(available_dates, reverse=True))
         
         vol_multiplier = st.sidebar.number_input("Minimum Volume Surge (x Usual)", min_value=1.0, value=2.0, step=0.5)
         price_surge_pct = st.sidebar.number_input("Minimum Price Surge (%)", min_value=0.5, value=3.0, step=0.5)
         
         results = []
-        tickers_list = list(history_records.keys())
         
-        # --- PATH A: LIVE INTRADAY SCANNING ---
-        if selected_date_str == "Today (Live 15m Refresh)":
-            st.info("🔄 Running Live Intraday Extrapolation. Data refreshes automatically every 15 minutes.")
+        for stock, info in history_records.items():
+            df_hist = info['History']
             
-            fetch_list = [f"{t}.NS" for t in tickers_list]
-            live_quotes = fetch_live_quotes(fetch_list)
+            df_hist_str = df_hist.copy()
+            df_hist_str.index = df_hist_str.index.strftime('%Y-%m-%d')
             
-            # Get current date in IST to check against historical data
-            ist = pytz.timezone('Asia/Kolkata')
-            today_str = datetime.now(ist).strftime('%Y-%m-%d')
-            
-            for stock, info in history_records.items():
-                live_data = live_quotes.get(f"{stock}.NS")
-                if not live_data: continue
+            if selected_date_str in df_hist_str.index:
+                row = df_hist_str.loc[selected_date_str]
                 
-                df_hist = info['History']
-                if len(df_hist) < 2: continue
-                
-                live_price = live_data['Live_Price']
-                live_volume = live_data['Live_Volume']
-                
-                # --- THE OVERLAP FIX ---
-                last_hist_date_str = df_hist.index[-1].strftime('%Y-%m-%d')
-                
-                if last_hist_date_str == today_str:
-                    # Parquet file was updated today. Yesterday is one row back (-2).
-                    yesterday_close = df_hist['Close'].iloc[-2]
-                    avg_vol_20d = df_hist['Avg_Volume'].iloc[-2]
-                else:
-                    # Parquet file was updated yesterday. Yesterday is the last row (-1).
-                    yesterday_close = df_hist['Close'].iloc[-1]
-                    avg_vol_20d = df_hist['Avg_Volume'].iloc[-1]
-                
-                if pd.isna(yesterday_close) or pd.isna(avg_vol_20d) or avg_vol_20d == 0: continue
-                
-                live_pct_change = ((live_price / yesterday_close) - 1) * 100
-                projected_eod_volume = extrapolate_intraday_volume(live_volume)
-                live_vol_surge = projected_eod_volume / avg_vol_20d
-                
-                if live_pct_change >= price_surge_pct and live_vol_surge >= vol_multiplier:
-                    action_dates_df = df_hist[(df_hist['Pct_Change'] >= price_surge_pct) & (df_hist['Vol_Surge'] >= vol_multiplier)]
+                if row['Pct_Change'] >= price_surge_pct and row['Vol_Surge'] >= vol_multiplier:
+                    
+                    action_dates_df = df_hist_str[(df_hist_str['Pct_Change'] >= price_surge_pct) & (df_hist_str['Vol_Surge'] >= vol_multiplier)]
                     action_count = len(action_dates_df)
-                    dates_str = ", ".join(action_dates_df.index.strftime('%Y-%m-%d').tolist())
-                    display_val = f"{action_count} ({dates_str})" if action_count > 0 else "0 (First time)"
+                    
+                    dates_str = ", ".join(action_dates_df.index.tolist())
+                    display_val = f"{action_count} ({dates_str})"
                     
                     results.append({
                         "Stock": stock,
                         "Sector": info['Sector'],
-                        "Live Price": live_price,
-                        "Projected Vol": projected_eod_volume,
-                        "20D Avg Vol": avg_vol_20d,
-                        "Live Surge (x)": live_vol_surge,
-                        "Live Change (%)": live_pct_change,
-                        "Historical Counts (30D)": display_val
+                        "Close Price": row['Close'],
+                        "Volume": row['Volume'],
+                        "20D Avg Volume": row['Avg_Volume'],
+                        "Volume Surge (x)": row['Vol_Surge'],
+                        "Price Change (%)": row['Pct_Change'],
+                        "Action Count (Last 30 Days)": display_val
                     })
-
-        # --- PATH B: HISTORICAL SCANNING ---
-        else:
-            for stock, info in history_records.items():
-                df_hist = info['History']
-                df_hist_str = df_hist.copy()
-                df_hist_str.index = df_hist_str.index.strftime('%Y-%m-%d')
-                
-                if selected_date_str in df_hist_str.index:
-                    row = df_hist_str.loc[selected_date_str]
                     
-                    if row['Pct_Change'] >= price_surge_pct and row['Vol_Surge'] >= vol_multiplier:
-                        action_dates_df = df_hist_str[(df_hist_str['Pct_Change'] >= price_surge_pct) & (df_hist_str['Vol_Surge'] >= vol_multiplier)]
-                        action_count = len(action_dates_df)
-                        dates_str = ", ".join(action_dates_df.index.tolist())
-                        display_val = f"{action_count} ({dates_str})"
-                        
-                        results.append({
-                            "Stock": stock,
-                            "Sector": info['Sector'],
-                            "Close Price": row['Close'],
-                            "Volume": row['Volume'],
-                            "20D Avg Volume": row['Avg_Volume'],
-                            "Volume Surge (x)": row['Vol_Surge'],
-                            "Price Change (%)": row['Pct_Change'],
-                            "Historical Counts (30D)": display_val  
-                        })
-                        
-        # --- RENDER RESULTS ---
         if results:
             df_results = pd.DataFrame(results)
-            surge_col = "Live Surge (x)" if selected_date_str == "Today (Live 15m Refresh)" else "Volume Surge (x)"
-            df_results = df_results.sort_values(by=surge_col, ascending=False).reset_index(drop=True)
+            df_results = df_results.sort_values(by="Volume Surge (x)", ascending=False).reset_index(drop=True)
             df_results.index = df_results.index + 1
             
-            st.markdown(f"### Stocks showing Price-Volume Action: **{selected_date_str}**")
+            st.markdown(f"### Stocks showing Price-Volume Action on **{selected_date_str}**")
+            st.markdown(f"> **Criteria Met:** Price increased by **≥ {price_surge_pct}%** |  Volume was **≥ {vol_multiplier}x** its 20-Day Average")
             
-            # Format the columns based on Live vs Historical
-            if selected_date_str == "Today (Live 15m Refresh)":
-                st.dataframe(df_results.style.format({
-                    "Live Price": "{:,.2f}", 
-                    "Projected Vol": "{:,.0f}",
-                    "20D Avg Vol": "{:,.0f}",
-                    "Live Surge (x)": "{:.2f}x",
-                    "Live Change (%)": "{:.2f}%"
-                }), use_container_width=True, height=600)
-            else:
-                st.dataframe(df_results.style.format({
-                    "Close Price": "{:,.2f}", 
-                    "Volume": "{:,.0f}",
-                    "20D Avg Volume": "{:,.0f}",
-                    "Volume Surge (x)": "{:.2f}x",
-                    "Price Change (%)": "{:.2f}%"
-                }), use_container_width=True, height=600)
+            st.dataframe(df_results.style.format({
+                "Close Price": "{:,.2f}", 
+                "Volume": "{:,.0f}",
+                "20D Avg Volume": "{:,.0f}",
+                "Volume Surge (x)": "{:.2f}x",
+                "Price Change (%)": "{:.2f}%"
+            }), use_container_width=True, height=600)
+            
         else:
-            st.info(f"No stocks in your watchlist met the criteria for {selected_date_str}.")
+            st.info(f"No stocks in your watchlist met the criteria on {selected_date_str}.")
