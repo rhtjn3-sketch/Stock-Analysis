@@ -4,8 +4,11 @@ import pandas as pd
 import numpy as np
 import requests
 import io
-#import time
+import time
 import plotly.express as px  
+import concurrent.futures
+from datetime import datetime
+import pytz # <--- NEW IMPORT
 
 st.set_page_config(page_title="Nifty 750 Pro Engine", layout="wide")
 
@@ -258,6 +261,41 @@ def get_price_volume_history():
                 pass
                 
     return history_records
+  
+
+# =======================================================
+# LIVE DATA LAYER: 15-Minute Auto-Refresh & Extrapolation
+# =======================================================
+@st.cache_data(ttl=900, show_spinner=False)
+def fetch_live_quotes(tickers):
+    """Bulk fetches ONLY the current day's price and volume to minimize API load."""
+    live_data = {}
+    
+    # A single bulk request for 1-day data is much safer than 750 individual calls
+    try:
+        df_live = yf.download(tickers, period="1d", group_by='ticker', threads=5, progress=False)
+        
+        for t in tickers:
+            try:
+                # Handle yfinance's column structure
+                if len(tickers) > 1:
+                    stock_df = df_live[t]
+                else:
+                    stock_df = df_live
+                    
+                stock_df = stock_df.dropna()
+                if not stock_df.empty:
+                    live_data[t] = {
+                        'Live_Price': float(stock_df['Close'].iloc[-1]),
+                        'Live_Volume': float(stock_df['Volume'].iloc[-1])
+                    }
+            except Exception:
+                pass
+    except Exception as e:
+        pass
+            
+    return live_data
+
 
 # ==========================================
 # UI: TOP NAVIGATION BAR
@@ -481,81 +519,138 @@ elif st.session_state.current_page == 3:
         st.warning("⚠️ Could not load data for Nifty Sectoral Indices.")
 
 # =======================================================
-# PAGE 4: PRICE-VOLUME ACTION SCREENER
+# PAGE 4: PRICE-VOLUME ACTION SCREENER (LIVE & HISTORICAL)
 # =======================================================
 elif st.session_state.current_page == 4:
     st.sidebar.header("Price-Volume Parameters")
     
-    # 1. Load the pre-calculated daily history (Uses cached bulk data so it's incredibly fast)
     history_records = get_price_volume_history()
     
     if not history_records:
         st.warning("⚠️ Market data is still initializing or unavailable.")
     else:
-        # Extract available historical dates from the first available stock
+        # Extract available historical dates
         first_stock = list(history_records.keys())[0]
-        available_dates = history_records[first_stock]['History'].index.strftime('%Y-%m-%d').tolist()
+        historical_dates = sorted(history_records[first_stock]['History'].index.strftime('%Y-%m-%d').tolist(), reverse=True)
         
-        # 2. UI Controls for the Screener
-        selected_date_str = st.sidebar.selectbox("Select Target Date:", sorted(available_dates, reverse=True))
+        # Add "Today (Live)" to the top of the dropdown options
+        dropdown_options = ["Today (Live 15m Refresh)"] + historical_dates
+        selected_date_str = st.sidebar.selectbox("Select Target Date:", dropdown_options)
         
-        # Threshold selections
         vol_multiplier = st.sidebar.number_input("Minimum Volume Surge (x Usual)", min_value=1.0, value=2.0, step=0.5)
         price_surge_pct = st.sidebar.number_input("Minimum Price Surge (%)", min_value=0.5, value=3.0, step=0.5)
         
         results = []
+        tickers_list = list(history_records.keys())
         
-        # 3. Process the logic across all stocks
-        for stock, info in history_records.items():
-            df_hist = info['History']
+        # --- PATH A: LIVE INTRADAY SCANNING ---
+        if selected_date_str == "Today (Live 15m Refresh)":
+            st.info("🔄 Running Live Intraday Extrapolation. Data refreshes automatically every 15 minutes.")
             
-            # Convert DatetimeIndex to string for easy exact matching
-            df_hist_str = df_hist.copy()
-            df_hist_str.index = df_hist_str.index.strftime('%Y-%m-%d')
+            fetch_list = [f"{t}.NS" for t in tickers_list]
+            live_quotes = fetch_live_quotes(fetch_list)
             
-            if selected_date_str in df_hist_str.index:
-                row = df_hist_str.loc[selected_date_str]
+            # Get current date in IST to check against historical data
+            ist = pytz.timezone('Asia/Kolkata')
+            today_str = datetime.now(ist).strftime('%Y-%m-%d')
+            
+            for stock, info in history_records.items():
+                live_data = live_quotes.get(f"{stock}.NS")
+                if not live_data: continue
                 
-                # Check if the stock meets the criteria ON the selected date
-                if row['Pct_Change'] >= price_surge_pct and row['Vol_Surge'] >= vol_multiplier:
-                    
-                    # 4. Extract exactly which dates triggered this criteria over the last 30 days
-                    action_dates_df = df_hist_str[(df_hist_str['Pct_Change'] >= price_surge_pct) & (df_hist_str['Vol_Surge'] >= vol_multiplier)]
+                df_hist = info['History']
+                if len(df_hist) < 2: continue
+                
+                live_price = live_data['Live_Price']
+                live_volume = live_data['Live_Volume']
+                
+                # --- THE OVERLAP FIX ---
+                last_hist_date_str = df_hist.index[-1].strftime('%Y-%m-%d')
+                
+                if last_hist_date_str == today_str:
+                    # Parquet file was updated today. Yesterday is one row back (-2).
+                    yesterday_close = df_hist['Close'].iloc[-2]
+                    avg_vol_20d = df_hist['Avg_Volume'].iloc[-2]
+                else:
+                    # Parquet file was updated yesterday. Yesterday is the last row (-1).
+                    yesterday_close = df_hist['Close'].iloc[-1]
+                    avg_vol_20d = df_hist['Avg_Volume'].iloc[-1]
+                
+                if pd.isna(yesterday_close) or pd.isna(avg_vol_20d) or avg_vol_20d == 0: continue
+                
+                live_pct_change = ((live_price / yesterday_close) - 1) * 100
+                projected_eod_volume = extrapolate_intraday_volume(live_volume)
+                live_vol_surge = projected_eod_volume / avg_vol_20d
+                
+                if live_pct_change >= price_surge_pct and live_vol_surge >= vol_multiplier:
+                    action_dates_df = df_hist[(df_hist['Pct_Change'] >= price_surge_pct) & (df_hist['Vol_Surge'] >= vol_multiplier)]
                     action_count = len(action_dates_df)
-                    
-                    # Create the formatted string: "Count (Date1, Date2)"
-                    dates_str = ", ".join(action_dates_df.index.tolist())
-                    display_val = f"{action_count} ({dates_str})"
+                    dates_str = ", ".join(action_dates_df.index.strftime('%Y-%m-%d').tolist())
+                    display_val = f"{action_count} ({dates_str})" if action_count > 0 else "0 (First time)"
                     
                     results.append({
                         "Stock": stock,
                         "Sector": info['Sector'],
-                        "Close Price": row['Close'],
-                        "Volume": row['Volume'],
-                        "20D Avg Volume": row['Avg_Volume'],
-                        "Volume Surge (x)": row['Vol_Surge'],
-                        "Price Change (%)": row['Pct_Change'],
-                        "Action Count (Last 30 Days)": display_val  # Injecting the new string format here
+                        "Live Price": live_price,
+                        "Projected Vol": projected_eod_volume,
+                        "20D Avg Vol": avg_vol_20d,
+                        "Live Surge (x)": live_vol_surge,
+                        "Live Change (%)": live_pct_change,
+                        "Historical Counts (30D)": display_val
                     })
+
+        # --- PATH B: HISTORICAL SCANNING ---
+        else:
+            for stock, info in history_records.items():
+                df_hist = info['History']
+                df_hist_str = df_hist.copy()
+                df_hist_str.index = df_hist_str.index.strftime('%Y-%m-%d')
+                
+                if selected_date_str in df_hist_str.index:
+                    row = df_hist_str.loc[selected_date_str]
                     
-        # 5. Render the Results
+                    if row['Pct_Change'] >= price_surge_pct and row['Vol_Surge'] >= vol_multiplier:
+                        action_dates_df = df_hist_str[(df_hist_str['Pct_Change'] >= price_surge_pct) & (df_hist_str['Vol_Surge'] >= vol_multiplier)]
+                        action_count = len(action_dates_df)
+                        dates_str = ", ".join(action_dates_df.index.tolist())
+                        display_val = f"{action_count} ({dates_str})"
+                        
+                        results.append({
+                            "Stock": stock,
+                            "Sector": info['Sector'],
+                            "Close Price": row['Close'],
+                            "Volume": row['Volume'],
+                            "20D Avg Volume": row['Avg_Volume'],
+                            "Volume Surge (x)": row['Vol_Surge'],
+                            "Price Change (%)": row['Pct_Change'],
+                            "Historical Counts (30D)": display_val  
+                        })
+                        
+        # --- RENDER RESULTS ---
         if results:
             df_results = pd.DataFrame(results)
-            # Sort by the most aggressive volume surge
-            df_results = df_results.sort_values(by="Volume Surge (x)", ascending=False).reset_index(drop=True)
+            surge_col = "Live Surge (x)" if selected_date_str == "Today (Live 15m Refresh)" else "Volume Surge (x)"
+            df_results = df_results.sort_values(by=surge_col, ascending=False).reset_index(drop=True)
             df_results.index = df_results.index + 1
             
-            st.markdown(f"### Stocks showing Price-Volume Action on **{selected_date_str}**")
-            st.markdown(f"> **Criteria Met:** Price increased by **≥ {price_surge_pct}%** |  Volume was **≥ {vol_multiplier}x** its 20-Day Average")
+            st.markdown(f"### Stocks showing Price-Volume Action: **{selected_date_str}**")
             
-            # Format and display the table
-            st.dataframe(df_results.style.format({
-                "Close Price": "{:,.2f}", # UPDATED: Commas and limited to 2 decimals
-                "Volume": "{:,.0f}",
-                "20D Avg Volume": "{:,.0f}",
-                "Volume Surge (x)": "{:.2f}x",
-                "Price Change (%)": "{:.2f}%"
-            }), use_container_width=True, height=600)
-            
+            # Format the columns based on Live vs Historical
+            if selected_date_str == "Today (Live 15m Refresh)":
+                st.dataframe(df_results.style.format({
+                    "Live Price": "{:,.2f}", 
+                    "Projected Vol": "{:,.0f}",
+                    "20D Avg Vol": "{:,.0f}",
+                    "Live Surge (x)": "{:.2f}x",
+                    "Live Change (%)": "{:.2f}%"
+                }), use_container_width=True, height=600)
+            else:
+                st.dataframe(df_results.style.format({
+                    "Close Price": "{:,.2f}", 
+                    "Volume": "{:,.0f}",
+                    "20D Avg Volume": "{:,.0f}",
+                    "Volume Surge (x)": "{:.2f}x",
+                    "Price Change (%)": "{:.2f}%"
+                }), use_container_width=True, height=600)
         else:
-            st.info(f"No stocks in your watchlist met the criteria on {selected_date_str}.")
+            st.info(f"No stocks in your watchlist met the criteria for {selected_date_str}.")
