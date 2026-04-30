@@ -7,6 +7,7 @@ import io
 import time
 import plotly.express as px  
 import concurrent.futures
+import os
 
 st.set_page_config(page_title="Nifty 750 Pro Engine", layout="wide")
 
@@ -25,59 +26,64 @@ def prev_page():
         st.session_state.current_page -= 1
 
 # =======================================================
-# MANUAL DATA REFRESH FUNCTION (The "Ghost Worker")
+# INCREMENTAL DATA REFRESH (The "Delta Sync")
 # =======================================================
 def trigger_manual_data_refresh():
-    """Runs the robust data_fetcher logic directly inside Streamlit."""
-    st.sidebar.info("Step 1: Fetching Nifty Universe...")
-    raw_tickers = []
-    total_market_url = "https://www.niftyindices.com/IndexConstituent/ind_niftytotalmarket_list.csv"
+    """Performs a high-speed incremental sync by fetching ONLY today's data."""
+    st.sidebar.info("Step 1: Reading existing database...")
     
-    try:
-        res = requests.get(total_market_url, headers={"User-Agent": "Mozilla/5.0"})
-        df_raw = pd.read_csv(io.StringIO(res.text))
-        df_raw.columns = df_raw.columns.str.strip()
-        df_raw['Symbol'] = df_raw['Symbol'].astype(str).str.strip()
-        raw_tickers = df_raw['Symbol'].dropna().unique().tolist()
-    except Exception as e:
-        pass
-    
-    if not raw_tickers:
-        raw_tickers = ["RELIANCE", "TCS", "HDFCBANK", "ZOMATO"]
+    if not os.path.exists("nifty_750_master.parquet"):
+        st.sidebar.error("❌ Master Parquet file not found. Please run the full data_fetcher.py first.")
+        return False
         
-    tickers = [ticker if ticker.endswith('.NS') else f"{ticker}.NS" for ticker in raw_tickers]
+    try:
+        existing_data = pd.read_parquet("nifty_750_master.parquet")
+        # Extract the exact tickers already in our database
+        tickers = list(existing_data.columns.levels[0])
+    except Exception as e:
+        st.sidebar.error("❌ Error reading Parquet file.")
+        return False
+
     total_tickers = len(tickers)
+    st.sidebar.info(f"Step 2: Fetching live 1-day data for {total_tickers} stocks...")
+    new_data_frames = []
     
-    st.sidebar.info(f"Step 2: Securely downloading {total_tickers} stocks...")
-    data_frames = []
-    
-    def download_single(ticker):
-        for attempt in range(3):
+    def download_single_live(ticker):
+        for attempt in range(2): # Fast retry loop for single-day data
             try:
-                df = yf.Ticker(ticker).history(period="2y")
+                # Fetching ONLY 1 day of data makes this incredibly fast
+                df = yf.Ticker(ticker).history(period="1d")
                 if not df.empty:
                     df.columns = pd.MultiIndex.from_product([[ticker], df.columns])
                     return df
             except Exception:
                 pass
-            time.sleep(1)
+            time.sleep(0.5)
         return None
 
     progress_bar = st.sidebar.progress(0)
     completed = 0
     
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(download_single, t) for t in tickers]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(download_single_live, t) for t in tickers]
         for future in concurrent.futures.as_completed(futures):
             res = future.result()
             if res is not None:
-                data_frames.append(res)
+                new_data_frames.append(res)
             completed += 1
             progress_bar.progress(completed / total_tickers)
 
-    if data_frames:
-        st.sidebar.info("Step 3: Compiling Parquet file...")
-        final_data = pd.concat(data_frames, axis=1)
+    if new_data_frames:
+        st.sidebar.info("Step 3: Merging & updating Parquet file...")
+        new_data = pd.concat(new_data_frames, axis=1)
+        
+        # Stack the new data onto the old data
+        final_data = pd.concat([existing_data, new_data])
+        
+        # CRITICAL: Drop duplicates by Date index, keeping the absolute newest entry
+        final_data = final_data[~final_data.index.duplicated(keep='last')]
+        
+        # Save back to disk
         final_data.to_parquet("nifty_750_master.parquet", engine="pyarrow")
         return True
     else:
@@ -89,76 +95,61 @@ def trigger_manual_data_refresh():
 @st.cache_data(show_spinner=False)
 def fetch_market_data_bulk():
     """Reads the pre-downloaded Parquet file instantly."""
-    raw_tickers = []
-    industry_map = {}
-    
-    total_market_url = "https://www.niftyindices.com/IndexConstituent/ind_niftytotalmarket_list.csv"
-    headers = {"User-Agent": "Mozilla/5.0"}
-
-    try:
-        res = requests.get(total_market_url, headers=headers)
-        df_raw = pd.read_csv(io.StringIO(res.text))
-        df_raw.columns = df_raw.columns.str.strip()
-        df_raw['Symbol'] = df_raw['Symbol'].astype(str).str.strip()
-        
-        if 'Industry' in df_raw.columns:
-            df_raw['Industry'] = df_raw['Industry'].astype(str).str.strip()
-            industry_map = dict(zip(df_raw['Symbol'], df_raw['Industry']))                                                    
-        raw_tickers = df_raw['Symbol'].dropna().unique().tolist()
-    except Exception:
-        pass
-    
-    if not raw_tickers:
-        raw_tickers = ["RELIANCE", "TCS", "HDFCBANK", "ZOMATO"]
-        industry_map = {t: "Unknown" for t in raw_tickers}                                                  
-        
-    tickers = [ticker if ticker.endswith('.NS') else f"{ticker}.NS" for ticker in raw_tickers]
-    
     try:
         final_data = pd.read_parquet("nifty_750_master.parquet")
+        tickers = list(final_data.columns.levels[0])
     except FileNotFoundError:
         final_data = pd.DataFrame()
+        tickers = []
         
-    return tickers, final_data, industry_map
+    return tickers, final_data
 
 # =======================================================
-# DATA ENGINE 1: Fetching & Filtering (for Watchlist)
+# DATA ENGINE 1: Watchlist (Reads Excel for Market Cap)
 # =======================================================
 @st.cache_data 
 def load_data_watchlist():
-    tickers, data, industry_map = fetch_market_data_bulk()
+    tickers, data = fetch_market_data_bulk()
     
     if data.empty:
         return pd.DataFrame()
         
-    # --- NEW: Instantly load Market Caps from the local CSV ---
+    # --- OFFLINE METADATA INTEGRATION ---
+    mcap_dict = {}
+    sector_dict = {}
     try:
-        df_metadata = pd.read_csv("nifty_750_metadata.csv")
-        # Convert to dictionary for instant lookups: {'RELIANCE': 1900000.0, ...}
-        mcap_dict = dict(zip(df_metadata['Stock'], df_metadata['Market Cap (Cr)']))
-        sector_dict = dict(zip(df_metadata['Stock'], df_metadata['Sector']))
-    except FileNotFoundError:
-        mcap_dict = {}
-        sector_dict = {}
+        # Reads the local Excel file managed by the user
+        df_excel = pd.read_excel("market_cap.xlsx")
+        for _, row in df_excel.iterrows():
+            sym = str(row.get('Stock Name', '')).strip()
+            sec = str(row.get('Sector', 'Unknown')).strip()
+            # Handle potential NaN or text in numeric columns
+            try:
+                mcap = float(row.get('Market Cap (in Cr)', 0.0))
+            except:
+                mcap = 0.0
+                
+            mcap_dict[sym] = mcap
+            sector_dict[sym] = sec
+    except Exception:
+        st.warning("⚠️ 'market_cap.xlsx' not found. Sector & Market Cap data will be blank.")
         
     total_tickers = len(tickers)
-    progress_text = "Compiling Watchlist..."
+    progress_text = "Compiling Watchlist Metrics..."
     my_bar = st.progress(0, text=progress_text)
     
     metrics = []
     
     for i, ticker in enumerate(tickers):
         my_bar.progress((i + 1) / total_tickers, text=f"Processing {i+1}/{total_tickers}: {ticker}")
-        
         try:
             df = data[ticker].dropna() if len(tickers) > 1 else data.dropna()
             if df.empty: continue
             
             clean_symbol = ticker.replace('.NS', '')                                       
             
-            # --- NO MORE YAHOO API CALLS HERE! ---
-            # Instantly grab the pre-calculated fundamental data
-            sector = sector_dict.get(clean_symbol, industry_map.get(clean_symbol, 'Unknown'))
+            # Instantly pull fundamentals from the Excel dictionaries (ZERO API CALLS)
+            sector = sector_dict.get(clean_symbol, 'Unknown')
             market_cap_cr = mcap_dict.get(clean_symbol, 0.0)
             
             current_price = df['Close'].iloc[-1]
@@ -186,11 +177,11 @@ def load_data_watchlist():
                 "Above 200 DMA?": "Yes" if not np.isnan(sma_200) and current_price > sma_200 else "No"
             })
         except Exception:
-            pass 
+            pass
             
     my_bar.empty()
     return pd.DataFrame(metrics)
-	
+
 # =======================================================
 # DATA ENGINE 2: Fetching Index Performance
 # =======================================================
@@ -269,11 +260,22 @@ def fetch_sector_constituents(sector_name):
 # =======================================================
 @st.cache_data
 def get_price_volume_history():
-    tickers, data, industry_map = fetch_market_data_bulk()
+    tickers, data = fetch_market_data_bulk()
     history_records = {}
     
     if data.empty:
         return history_records
+        
+    # Grab sectors from Excel to display in the scanner
+    sector_dict = {}
+    try:
+        df_excel = pd.read_excel("market_cap.xlsx")
+        for _, row in df_excel.iterrows():
+            sym = str(row.get('Stock Name', '')).strip()
+            sec = str(row.get('Sector', 'Unknown')).strip()
+            sector_dict[sym] = sec
+    except Exception:
+        pass
     
     with st.spinner("Calculating 30-Day Historical Price & Volume signals..."):
         for ticker in tickers:
@@ -298,7 +300,7 @@ def get_price_volume_history():
                 
                 clean_symbol = ticker.replace('.NS', '')
                 history_records[clean_symbol] = {
-                    'Sector': industry_map.get(clean_symbol, 'Unknown'),
+                    'Sector': sector_dict.get(clean_symbol, 'Unknown'),
                     'History': df_history
                 }
             except Exception:
@@ -333,9 +335,8 @@ if st.session_state.current_page == 1:
     df_watchlist = load_data_watchlist()
     
     if df_watchlist.empty:
-        st.warning("⚠️ No data available to display. Please navigate to Page 4 and click 'Force Refresh Data' in the sidebar.")
+        st.warning("⚠️ No data available. Please run data_fetcher.py locally to generate the Master Parquet file.")
     else:
-        # --- PAGE 1 SPECIFIC SIDEBAR ---
         st.sidebar.header("Filter & Rank Engine")
         
         sort_options = ["Market Cap (Cr)", "1M Return (%)", "1W Return (%)", "3M Return (%)", "6M Return (%)", "1Y Return (%)", "Price", "Sector"]
@@ -534,20 +535,20 @@ elif st.session_state.current_page == 3:
 # =======================================================
 elif st.session_state.current_page == 4:
     # --- PAGE 4 SPECIFIC SIDEBAR ---
-    st.sidebar.header("⚙️ Data Management")
-    st.sidebar.write("Update market data on-demand.")
+    st.sidebar.header("⚡ Fast Intraday Sync")
+    st.sidebar.write("Fetch today's prices and append to history.")
 
     if st.sidebar.button("🔄 Force Refresh Data", use_container_width=True):
-        with st.spinner("Executing secure data refresh... This will take a few minutes."):
+        with st.spinner("Executing fast incremental sync (1-Day data)..."):
             success = trigger_manual_data_refresh()
             
         if success:
-            st.sidebar.success("✅ Data successfully updated!")
+            st.sidebar.success("✅ Fast Sync complete! Database updated.")
             st.cache_data.clear() # Wipe the old data from memory
-            time.sleep(2)
+            time.sleep(1)
             st.rerun() # Refresh the app automatically
         else:
-            st.sidebar.error("❌ Failed to fetch data. Try again later.")
+            st.sidebar.error("❌ Sync failed. Make sure the master Parquet file exists.")
 
     st.sidebar.divider()
     
@@ -556,7 +557,7 @@ elif st.session_state.current_page == 4:
     history_records = get_price_volume_history()
     
     if not history_records:
-        st.warning("⚠️ Market data is empty. Please click 'Force Refresh Data' in the sidebar.")
+        st.warning("⚠️ Market data is empty. Please run data_fetcher.py first.")
     else:
         first_stock = list(history_records.keys())[0]
         available_dates = history_records[first_stock]['History'].index.strftime('%Y-%m-%d').tolist()
