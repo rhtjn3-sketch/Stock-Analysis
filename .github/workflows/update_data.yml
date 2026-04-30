@@ -1,1 +1,33 @@
+name: Daily Market Data Fetch
 
+# Run at 10:30 AM UTC (which is 4:00 PM IST), Monday to Friday
+on:
+  schedule:
+    - cron: '30 10 * * 1-5'
+  workflow_dispatch: # Allows you to trigger it manually via button
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: pip install yfinance pandas pyarrow requests
+
+      - name: Run Data Fetcher
+        run: python data_fetcher.py
+
+      - name: Commit and Push Updated Data
+        run: |
+          git config --global user.name "MarketBot"
+          git config --global user.email "bot@example.com"
+          git add nifty_750_master.parquet
+          git commit -m "Automated Market Data Update" || exit 0
+          git push
