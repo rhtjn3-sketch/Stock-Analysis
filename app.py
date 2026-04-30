@@ -115,17 +115,17 @@ def fetch_market_data_bulk():
                 time.sleep(2 ** attempt)
         
         # ATTEMPT 2: Fallback to single-ticker extraction
-        # (Triggers if the chunk fails 3 times, usually due to one bad/delisted stock)
         if not chunk_success:
             for single_ticker in chunk:
                 try:
-                    # Passing single_ticker as a list [single_ticker] forces yfinance 
-                    # to keep the MultiIndex formatting required for combining later.
                     single_data = yf.download(
                         [single_ticker], period="2y", group_by='ticker', 
                         threads=False, session=session, progress=False
                     )
                     if not single_data.empty:
+                        # FIX: Force MultiIndex formatting so pd.concat doesn't corrupt the master database
+                        if not isinstance(single_data.columns, pd.MultiIndex):
+                            single_data.columns = pd.MultiIndex.from_product([[single_ticker], single_data.columns])
                         data_frames.append(single_data)
                 except Exception:
                     pass 
@@ -215,7 +215,16 @@ def load_data_watchlist():
             
     my_bar.empty()
     if failed_tickers:
-        st.warning(f"⚠️ Could not fetch data for {len(failed_tickers)} stocks: {', '.join(failed_tickers)}")
+        st.warning(f"⚠️ Could not fetch data for {len(failed_tickers)} stocks.")
+        
+    # FIX: If all downloads fail, return an empty dataframe with the exact expected columns
+    if not metrics:
+        return pd.DataFrame(columns=[
+            "Stock", "Sector", "Market Cap (Cr)", "Price", 
+            "1W Return (%)", "1M Return (%)", "3M Return (%)", 
+            "6M Return (%)", "1Y Return (%)", "Above 50 DMA?", "Above 200 DMA?"
+        ])
+        
     return pd.DataFrame(metrics)
 
 # =======================================================
@@ -362,6 +371,11 @@ st.divider()
 if st.session_state.current_page == 1:
     df_watchlist = load_data_watchlist()
     st.sidebar.header("Filter & Rank Engine")
+	# FIX: Show a friendly error instead of crashing if Yahoo blocked the connection
+    if df_watchlist.empty:
+        st.error("⚠️ Market data could not be loaded. Yahoo Finance may be temporarily blocking the server's IP. Please wait a few minutes and refresh the app.")
+    else:
+        st.sidebar.header("Filter & Rank Engine")
     
     sort_options = ["Market Cap (Cr)", "1M Return (%)", "1W Return (%)", "3M Return (%)", "6M Return (%)", "1Y Return (%)", "Price", "Sector"]
     sort_by = st.sidebar.selectbox("Rank Stocks By:", sort_options)
