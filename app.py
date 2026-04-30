@@ -28,7 +28,7 @@ def prev_page():
 # MANUAL DATA REFRESH FUNCTION (The "Ghost Worker")
 # =======================================================
 def trigger_manual_data_refresh():
-    """Runs the robust data_fetcher logic directly inside Streamlit when the user requests it."""
+    """Runs the robust data_fetcher logic directly inside Streamlit."""
     st.sidebar.info("Step 1: Fetching Nifty Universe...")
     raw_tickers = []
     total_market_url = "https://www.niftyindices.com/IndexConstituent/ind_niftytotalmarket_list.csv"
@@ -52,7 +52,7 @@ def trigger_manual_data_refresh():
     data_frames = []
     
     def download_single(ticker):
-        for attempt in range(3): # 3 retries per stock to guarantee data
+        for attempt in range(3):
             try:
                 df = yf.Ticker(ticker).history(period="2y")
                 if not df.empty:
@@ -83,25 +83,25 @@ def trigger_manual_data_refresh():
     else:
         return False
 
-# ==========================================
-# UI: GLOBAL SIDEBAR (Data Management)
-# ==========================================
-st.sidebar.header("⚙️ Data Management")
-st.sidebar.write("Update market data on-demand.")
+											
+									  
+											
+										   
+												 
 
-if st.sidebar.button("🔄 Force Refresh Data", use_container_width=True):
-    with st.spinner("Executing secure data refresh... This will take a few minutes."):
-        success = trigger_manual_data_refresh()
-        
-    if success:
-        st.sidebar.success("✅ Data successfully updated!")
-        st.cache_data.clear() # Wipe the old data from memory
-        time.sleep(2)
-        st.rerun() # Refresh the app automatically
-    else:
-        st.sidebar.error("❌ Failed to fetch data. Yahoo might be temporarily blocking the IP. Try again later.")
+																		  
+																					  
+											   
+		
+			   
+															
+															 
+					 
+												  
+		 
+																												  
 
-st.sidebar.divider()
+					
 
 # =======================================================
 # CORE DATA ENGINE: Decoupled Parquet Reader
@@ -137,7 +137,7 @@ def fetch_market_data_bulk():
     try:
         final_data = pd.read_parquet("nifty_750_master.parquet")
     except FileNotFoundError:
-        st.error("⚠️ Data file not found! Please click 'Force Refresh Data' in the sidebar.")
+																								 
         final_data = pd.DataFrame()
         
     return tickers, final_data, industry_map
@@ -157,7 +157,7 @@ def load_data_watchlist():
     my_bar = st.progress(0, text=progress_text)
     
     metrics = []
-    failed_tickers = []
+					   
     
     for i, ticker in enumerate(tickers):
         my_bar.progress((i + 1) / total_tickers, text=f"Processing {i+1}/{total_tickers}: {ticker}")
@@ -208,7 +208,7 @@ def load_data_watchlist():
                 "Above 50 DMA?": "Yes" if not np.isnan(sma_50) and current_price > sma_50 else "No",
                 "Above 200 DMA?": "Yes" if not np.isnan(sma_200) and current_price > sma_200 else "No"
             })
-        except Exception as e:
+        except Exception:
             pass
             
     my_bar.empty()
@@ -253,7 +253,7 @@ def load_index_data(index_list_with_names):
                 "6M Return (%)": round(ret_6m, 2),
                 "1Y Return (%)": round(ret_1y, 2),
             })
-        except Exception as e:
+        except Exception:
             pass
             
     df_metrics = pd.DataFrame(results)
@@ -356,8 +356,9 @@ if st.session_state.current_page == 1:
     df_watchlist = load_data_watchlist()
     
     if df_watchlist.empty:
-        st.warning("⚠️ No data available to display. Please click 'Force Refresh Data' in the sidebar.")
+        st.warning("⚠️ No data available to display. Please navigate to Page 4 and click 'Force Refresh Data' in the sidebar.")
     else:
+        # --- PAGE 1 SPECIFIC SIDEBAR ---
         st.sidebar.header("Filter & Rank Engine")
         
         sort_options = ["Market Cap (Cr)", "1M Return (%)", "1W Return (%)", "3M Return (%)", "6M Return (%)", "1Y Return (%)", "Price", "Sector"]
@@ -555,6 +556,24 @@ elif st.session_state.current_page == 3:
 # PAGE 4: PRICE-VOLUME ACTION SCREENER
 # =======================================================
 elif st.session_state.current_page == 4:
+    # --- PAGE 4 SPECIFIC SIDEBAR ---
+    st.sidebar.header("⚙️ Data Management")
+    st.sidebar.write("Update market data on-demand.")
+
+    if st.sidebar.button("🔄 Force Refresh Data", use_container_width=True):
+        with st.spinner("Executing secure data refresh... This will take a few minutes."):
+            success = trigger_manual_data_refresh()
+            
+        if success:
+            st.sidebar.success("✅ Data successfully updated!")
+            st.cache_data.clear() # Wipe the old data from memory
+            time.sleep(2)
+            st.rerun() # Refresh the app automatically
+        else:
+            st.sidebar.error("❌ Failed to fetch data. Try again later.")
+
+    st.sidebar.divider()
+    
     st.sidebar.header("Price-Volume Parameters")
     
     history_records = get_price_volume_history()
