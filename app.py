@@ -187,32 +187,127 @@ def load_data_watchlist():
 # =======================================================
 # DATA ENGINE 2: Fetching Index Performance
 # =======================================================
-@st.cache_data
+#@st.cache_data
+#def load_index_data(index_list_with_names):
+#    symbol_to_name = {ticker: name for ticker, name in index_list_with_names.items()}
+#    tickers = list(symbol_to_name.keys())
+    
+#    with st.spinner(f'Downloading performance data for market indices...'):
+#        data = yf.download(tickers, period="1y", group_by='ticker', threads=True)
+    
+#    results = []
+#    history_dict = {} 
+    
+#    for i, ticker in enumerate(tickers):
+#        try:
+#            df = data[ticker].dropna() if len(tickers) > 1 else data
+#            if df.empty: continue
+            
+#            index_name = symbol_to_name.get(ticker, ticker)
+#            history_dict[index_name] = df['Close']
+#            current_price = df['Close'].iloc[-1]
+            
+#            ret_1d = (current_price / df['Close'].iloc[-2] - 1) * 100 if len(df) >= 2 else np.nan
+#            ret_1w = (current_price / df['Close'].iloc[-6] - 1) * 100 if len(df) >= 6 else np.nan
+#            ret_1m = (current_price / df['Close'].iloc[-22] - 1) * 100 if len(df) >= 22 else np.nan
+#            ret_3m = (current_price / df['Close'].iloc[-64] - 1) * 100 if len(df) >= 64 else np.nan
+#            ret_6m = (current_price / df['Close'].iloc[-126] - 1) * 100 if len(df) >= 126 else np.nan
+#            ret_1y = (current_price / df['Close'].iloc[0] - 1) * 100 if len(df) > 0 else np.nan
+            
+#            results.append({
+#                "Index Ticker": ticker,
+#                "Market Index": index_name,
+#                "Price": round(current_price, 2),
+#                "1D Return (%)": round(ret_1d, 2),
+#                "1W Return (%)": round(ret_1w, 2),
+#                "1M Return (%)": round(ret_1m, 2),
+#                "3M Return (%)": round(ret_3m, 2),
+#                "6M Return (%)": round(ret_6m, 2),
+#                "1Y Return (%)": round(ret_1y, 2),
+#            })
+#        except Exception:
+#            pass
+            
+#    df_metrics = pd.DataFrame(results)
+#    df_history = pd.DataFrame(history_dict)
+    
+#    return df_metrics, df_history
+
+# =======================================================
+# DATA ENGINE 2 & 3: Fetching Index Performance (Delta Sync)
+# =======================================================
+
+@st.cache_data(ttl=300) # 5-minute cache so live prices stay fresh
 def load_index_data(index_list_with_names):
     symbol_to_name = {ticker: name for ticker, name in index_list_with_names.items()}
     tickers = list(symbol_to_name.keys())
     
-    with st.spinner(f'Downloading performance data for market indices...'):
-        data = yf.download(tickers, period="1y", group_by='ticker', threads=True)
-    
-    results = []
-    history_dict = {} 
-    
-    for i, ticker in enumerate(tickers):
+    with st.spinner(f'Syncing live data with historical database...'):
+        
+        # 1. READ HISTORICAL BASE FROM PARQUET
         try:
-            df = data[ticker].dropna() if len(tickers) > 1 else data
-            if df.empty: continue
+            hist_df = pd.read_parquet("nifty_indices_master.parquet")
+            # Only keep the columns we need for this specific page (Broad or Sector)
+            available_cols = [t for t in tickers if t in hist_df.columns]
+            hist_df = hist_df[available_cols]
+        except Exception:
+            hist_df = pd.DataFrame()
             
-            index_name = symbol_to_name.get(ticker, ticker)
-            history_dict[index_name] = df['Close']
-            current_price = df['Close'].iloc[-1]
+        # 2. FETCH LIVE 1-DAY DELTA
+        live_frames = []
+        for ticker in tickers:
+            for attempt in range(2): # Fast 2-retry loop for live data
+                try:
+                    df = yf.Ticker(ticker).history(period="1d")
+                    if not df.empty:
+                        df = df[['Close']].copy()
+                        df.columns = [ticker]
+                        df.index = df.index.tz_localize(None)
+                        live_frames.append(df)
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.2)
+                
+        # 3. MERGE BASE HISTORY WITH LIVE DELTA
+        if live_frames:
+            live_df = pd.concat(live_frames, axis=1)
+            if not hist_df.empty:
+                merged_df = pd.concat([hist_df, live_df])
+                # Drop duplicates to keep the absolute newest live row
+                merged_df = merged_df[~merged_df.index.duplicated(keep='last')] 
+            else:
+                merged_df = live_df
+        else:
+            merged_df = hist_df
             
-            ret_1d = (current_price / df['Close'].iloc[-2] - 1) * 100 if len(df) >= 2 else np.nan
-            ret_1w = (current_price / df['Close'].iloc[-6] - 1) * 100 if len(df) >= 6 else np.nan
-            ret_1m = (current_price / df['Close'].iloc[-22] - 1) * 100 if len(df) >= 22 else np.nan
-            ret_3m = (current_price / df['Close'].iloc[-64] - 1) * 100 if len(df) >= 64 else np.nan
-            ret_6m = (current_price / df['Close'].iloc[-126] - 1) * 100 if len(df) >= 126 else np.nan
-            ret_1y = (current_price / df['Close'].iloc[0] - 1) * 100 if len(df) > 0 else np.nan
+        if merged_df.empty:
+            return pd.DataFrame(), pd.DataFrame()
+            
+        # Ensure all gaps are forward-filled for smooth charts
+        merged_df = merged_df.ffill().dropna(how='all')
+        
+        # 4. CALCULATE METRICS
+        results = []
+        history_dict = {} 
+        
+        for ticker in merged_df.columns:
+            if ticker not in symbol_to_name: continue
+            
+            index_name = symbol_to_name.get(ticker)
+            # Drop NaNs just for this specific index to avoid calculation errors
+            clean_series = merged_df[ticker].dropna()
+            if clean_series.empty: continue
+                
+            history_dict[index_name] = clean_series
+            current_price = clean_series.iloc[-1]
+            
+            ret_1d = (current_price / clean_series.iloc[-2] - 1) * 100 if len(clean_series) >= 2 else np.nan
+            ret_1w = (current_price / clean_series.iloc[-6] - 1) * 100 if len(clean_series) >= 6 else np.nan
+            ret_1m = (current_price / clean_series.iloc[-22] - 1) * 100 if len(clean_series) >= 22 else np.nan
+            ret_3m = (current_price / clean_series.iloc[-64] - 1) * 100 if len(clean_series) >= 64 else np.nan
+            ret_6m = (current_price / clean_series.iloc[-126] - 1) * 100 if len(clean_series) >= 126 else np.nan
+            ret_1y = (current_price / clean_series.iloc[0] - 1) * 100 if len(clean_series) > 0 else np.nan
             
             results.append({
                 "Index Ticker": ticker,
@@ -225,13 +320,11 @@ def load_index_data(index_list_with_names):
                 "6M Return (%)": round(ret_6m, 2),
                 "1Y Return (%)": round(ret_1y, 2),
             })
-        except Exception:
-            pass
             
-    df_metrics = pd.DataFrame(results)
-    df_history = pd.DataFrame(history_dict)
-    
-    return df_metrics, df_history
+        df_metrics = pd.DataFrame(results)
+        df_history = pd.DataFrame(history_dict)
+        
+        return df_metrics, df_history
 
 # =======================================================
 # DATA ENGINE 3: Fetching Specific Sector Constituents
