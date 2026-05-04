@@ -12,6 +12,11 @@ import os
 st.set_page_config(page_title="Nifty 750 Pro Engine", layout="wide")
 
 # ==========================================
+# 🛑 PASTE YOUR PUBLISHED GOOGLE SHEET CSV LINK HERE
+# ==========================================
+GOOGLE_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRoR_4ZAlo5CY1NB-QsDJPqfeswra43fvKRHCF6sL9AlP9dxHRUAmV9MhWVRMKs5a-UB5faWcQblc9B/pub?gid=0&single=true&output=csv"
+
+# ==========================================
 # PAGE ROUTING SYSTEM
 # ==========================================
 if 'current_page' not in st.session_state:
@@ -29,7 +34,7 @@ def prev_page():
 # INCREMENTAL DATA REFRESH (The "Delta Sync")
 # =======================================================
 def trigger_manual_data_refresh():
-    """Performs a high-speed incremental sync by fetching ONLY today's data."""
+	"""Performs a high-speed incremental sync by fetching ONLY today's data."""																		   
     st.sidebar.info("Step 1: Reading existing database...")
     
     if not os.path.exists("nifty_750_master.parquet"):
@@ -38,7 +43,7 @@ def trigger_manual_data_refresh():
         
     try:
         existing_data = pd.read_parquet("nifty_750_master.parquet")
-        # Extract the exact tickers already in our database
+		# Extract the exact tickers already in our database												   
         tickers = list(existing_data.columns.levels[0])
     except Exception as e:
         st.sidebar.error("❌ Error reading Parquet file.")
@@ -51,7 +56,7 @@ def trigger_manual_data_refresh():
     def download_single_live(ticker):
         for attempt in range(2): # Fast retry loop for single-day data
             try:
-                # Fetching ONLY 1 day of data makes this incredibly fast
+				# Fetching ONLY 1 day of data makes this incredibly fast														
                 df = yf.Ticker(ticker).history(period="1d")
                 if not df.empty:
                     df.columns = pd.MultiIndex.from_product([[ticker], df.columns])
@@ -76,14 +81,11 @@ def trigger_manual_data_refresh():
     if new_data_frames:
         st.sidebar.info("Step 3: Merging & updating Parquet file...")
         new_data = pd.concat(new_data_frames, axis=1)
-        
-        # Stack the new data onto the old data
+		# Stack the new data onto the old data									  
         final_data = pd.concat([existing_data, new_data])
-        
-        # CRITICAL: Drop duplicates by Date index, keeping the absolute newest entry
+		# CRITICAL: Drop duplicates by Date index, keeping the absolute newest entry																			
         final_data = final_data[~final_data.index.duplicated(keep='last')]
-        
-        # Save back to disk
+		# Save back to disk				   
         final_data.to_parquet("nifty_750_master.parquet", engine="pyarrow")
         return True
     else:
@@ -94,7 +96,7 @@ def trigger_manual_data_refresh():
 # =======================================================
 @st.cache_data(show_spinner=False)
 def fetch_market_data_bulk():
-    """Reads the pre-downloaded Parquet file instantly."""
+	"""Reads the pre-downloaded Parquet file instantly."""													  
     try:
         final_data = pd.read_parquet("nifty_750_master.parquet")
         tickers = list(final_data.columns.levels[0])
@@ -105,7 +107,7 @@ def fetch_market_data_bulk():
     return tickers, final_data
 
 # =======================================================
-# DATA ENGINE 1: Watchlist (Reads Excel for Market Cap)
+# DATA ENGINE 1: Watchlist (Reads Google Sheets for Market Cap)
 # =======================================================
 @st.cache_data 
 def load_data_watchlist():
@@ -114,16 +116,16 @@ def load_data_watchlist():
     if data.empty:
         return pd.DataFrame()
         
-    # --- OFFLINE METADATA INTEGRATION ---
+	# --- OFFLINE METADATA INTEGRATION ---									  
     mcap_dict = {}
     sector_dict = {}
     try:
-        # Reads the local Excel file managed by the user
-        df_excel = pd.read_excel("market_cap.xlsx")
-        for _, row in df_excel.iterrows():
+        # Reads the LIVE Google Sheet
+        df_sheet = pd.read_csv(GOOGLE_SHEET_CSV_URL)
+        for _, row in df_sheet.iterrows():
             sym = str(row.get('Stock Name', '')).strip()
             sec = str(row.get('Sector', 'Unknown')).strip()
-            # Handle potential NaN or text in numeric columns
+			# Handle potential NaN or text in numeric columns												 
             try:
                 mcap = float(row.get('Market Cap (in Cr)', 0.0))
             except:
@@ -132,7 +134,7 @@ def load_data_watchlist():
             mcap_dict[sym] = mcap
             sector_dict[sym] = sec
     except Exception:
-        st.warning("⚠️ 'market_cap.xlsx' not found. Sector & Market Cap data will be blank.")
+        st.warning("⚠️ Could not connect to Google Sheet. Sector & Market Cap data will be blank.")
         
     total_tickers = len(tickers)
     progress_text = "Compiling Watchlist Metrics..."
@@ -147,13 +149,12 @@ def load_data_watchlist():
             if df.empty: continue
             
             clean_symbol = ticker.replace('.NS', '')                                       
-            
-            # Instantly pull fundamentals from the Excel dictionaries (ZERO API CALLS)
+			# Instantly pull fundamentals from the Excel dictionaries (ZERO API CALLS)																		  
             sector = sector_dict.get(clean_symbol, 'Unknown')
             market_cap_cr = mcap_dict.get(clean_symbol, 0.0)
-            
             current_price = df['Close'].iloc[-1]
             
+            ret_1d = (current_price / df['Close'].iloc[-2] - 1) * 100 if len(df) >= 2 else np.nan
             ret_1w = (current_price / df['Close'].iloc[-6] - 1) * 100 if len(df) >= 6 else np.nan
             ret_1m = (current_price / df['Close'].iloc[-22] - 1) * 100 if len(df) >= 22 else np.nan
             ret_3m = (current_price / df['Close'].iloc[-64] - 1) * 100 if len(df) >= 64 else np.nan
@@ -168,6 +169,7 @@ def load_data_watchlist():
                 "Sector": sector,
                 "Market Cap (Cr)": market_cap_cr,
                 "Price": round(current_price, 2),
+                "1D Return (%)": round(ret_1d, 2) if not np.isnan(ret_1d) else None,
                 "1W Return (%)": round(ret_1w, 2) if not np.isnan(ret_1w) else None,
                 "1M Return (%)": round(ret_1m, 2) if not np.isnan(ret_1m) else None,
                 "3M Return (%)": round(ret_3m, 2) if not np.isnan(ret_3m) else None,
@@ -205,6 +207,7 @@ def load_index_data(index_list_with_names):
             history_dict[index_name] = df['Close']
             current_price = df['Close'].iloc[-1]
             
+            ret_1d = (current_price / df['Close'].iloc[-2] - 1) * 100 if len(df) >= 2 else np.nan
             ret_1w = (current_price / df['Close'].iloc[-6] - 1) * 100 if len(df) >= 6 else np.nan
             ret_1m = (current_price / df['Close'].iloc[-22] - 1) * 100 if len(df) >= 22 else np.nan
             ret_3m = (current_price / df['Close'].iloc[-64] - 1) * 100 if len(df) >= 64 else np.nan
@@ -215,6 +218,7 @@ def load_index_data(index_list_with_names):
                 "Index Ticker": ticker,
                 "Market Index": index_name,
                 "Price": round(current_price, 2),
+                "1D Return (%)": round(ret_1d, 2),
                 "1W Return (%)": round(ret_1w, 2),
                 "1M Return (%)": round(ret_1m, 2),
                 "3M Return (%)": round(ret_3m, 2),
@@ -266,11 +270,11 @@ def get_price_volume_history():
     if data.empty:
         return history_records
         
-    # Grab sectors from Excel to display in the scanner
+    # Grab sectors from Google Sheet to display in the scanner
     sector_dict = {}
     try:
-        df_excel = pd.read_excel("market_cap.xlsx")
-        for _, row in df_excel.iterrows():
+        df_sheet = pd.read_csv(GOOGLE_SHEET_CSV_URL)
+        for _, row in df_sheet.iterrows():
             sym = str(row.get('Stock Name', '')).strip()
             sec = str(row.get('Sector', 'Unknown')).strip()
             sector_dict[sym] = sec
@@ -339,7 +343,7 @@ if st.session_state.current_page == 1:
     else:
         st.sidebar.header("Filter & Rank Engine")
         
-        sort_options = ["Market Cap (Cr)", "1M Return (%)", "1W Return (%)", "3M Return (%)", "6M Return (%)", "1Y Return (%)", "Price", "Sector"]
+        sort_options = ["Market Cap (Cr)", "1D Return (%)", "1W Return (%)", "1M Return (%)", "3M Return (%)", "6M Return (%)", "1Y Return (%)", "Price", "Sector"]
         sort_by = st.sidebar.selectbox("Rank Stocks By:", sort_options)
         sort_order = st.sidebar.radio("Order:", ["Descending (Top Performers)", "Ascending (Bottom Performers)"])
         
@@ -376,9 +380,9 @@ if st.session_state.current_page == 1:
 
         st.dataframe(df_sorted.style.format(
             formatter={
-                "Market Cap (Cr)": "{:,.2f}", 
+                "Market Cap (Cr)": "{:,.0f}", 
                 "Price": "{:,.2f}", 
-                "1W Return (%)": "{:.2f}%", "1M Return (%)": "{:.2f}%",
+                "1D Return (%)": "{:.2f}%", "1W Return (%)": "{:.2f}%", "1M Return (%)": "{:.2f}%",
                 "3M Return (%)": "{:.2f}%", "6M Return (%)": "{:.2f}%", "1Y Return (%)": "{:.2f}%",
             }, na_rep="-"
         ), use_container_width=True, height=600)
@@ -395,14 +399,18 @@ elif st.session_state.current_page == 2:
     df_indices, df_history = load_index_data(broad_index_config)
     
     if not df_indices.empty:
-        timeframes = ["1W Return (%)", "1M Return (%)", "3M Return (%)", "6M Return (%)", "1Y Return (%)"]
-        selected_timeframe = st.selectbox("Select Timeframe:", timeframes, index=0)
+        timeframes = ["1D Return (%)", "1W Return (%)", "1M Return (%)", "3M Return (%)", "6M Return (%)", "1Y Return (%)"]
+        
+        # HORIZONTAL RADIO BUTTON TOGGLE
+        st.markdown("**Select Timeframe:**")
+        selected_timeframe = st.radio("Timeframe", timeframes, index=1, horizontal=True, label_visibility="collapsed")
+        st.markdown("<br>", unsafe_allow_html=True)
         
         df_sorted_indices = df_indices.sort_values(by=selected_timeframe, ascending=False).reset_index(drop=True)
         df_sorted_indices['Color'] = np.where(df_sorted_indices[selected_timeframe] >= 0, 'Positive', 'Negative')
         df_sorted_indices['Label'] = df_sorted_indices[selected_timeframe].apply(lambda x: f"{x:.2f}%" if not pd.isna(x) else "")
         
-        lookback_map = {"1W Return (%)": 6, "1M Return (%)": 22, "3M Return (%)": 64, "6M Return (%)": 126, "1Y Return (%)": len(df_history)}
+        lookback_map = {"1D Return (%)": 2, "1W Return (%)": 6, "1M Return (%)": 22, "3M Return (%)": 64, "6M Return (%)": 126, "1Y Return (%)": len(df_history)}
         df_slice = df_history.tail(lookback_map.get(selected_timeframe, 22))
 
         col1, col2 = st.columns(2)
@@ -449,8 +457,12 @@ elif st.session_state.current_page == 3:
     df_sectors, _ = load_index_data(sectoral_config)
     
     if not df_sectors.empty:
-        timeframes_sector = ["1W Return (%)", "1M Return (%)", "3M Return (%)", "6M Return (%)", "1Y Return (%)"]
-        selected_timeframe_sector = st.selectbox("Select Momentum Timeframe:", timeframes_sector, index=0)
+        timeframes_sector = ["1D Return (%)", "1W Return (%)", "1M Return (%)", "3M Return (%)", "6M Return (%)", "1Y Return (%)"]
+        
+        # HORIZONTAL RADIO BUTTON TOGGLE
+        st.markdown("**Select Momentum Timeframe:**")
+        selected_timeframe_sector = st.radio("Timeframe", timeframes_sector, index=1, horizontal=True, label_visibility="collapsed")
+        st.markdown("<br>", unsafe_allow_html=True)
         
         df_sorted_sectors = df_sectors.sort_values(by=selected_timeframe_sector, ascending=False).reset_index(drop=True)
         stacked_display = df_sorted_sectors.copy()
@@ -473,7 +485,7 @@ elif st.session_state.current_page == 3:
             df_drilled = df_master[df_master['Stock'].isin(constituent_symbols)].copy()
             
             if not df_drilled.empty:
-                return_cols = ["1W Return (%)", "1M Return (%)", "3M Return (%)", "6M Return (%)", "1Y Return (%)"]
+                return_cols = ["1D Return (%)", "1W Return (%)", "1M Return (%)", "3M Return (%)", "6M Return (%)", "1Y Return (%)"]
                 sector_stats = {}
                 for col in return_cols:
                     sector_stats[col] = {'mean': df_drilled[col].mean(), 'std': df_drilled[col].std()}
@@ -516,9 +528,9 @@ elif st.session_state.current_page == 3:
                 
                 styled_df = df_drilled_sorted.style.apply(apply_z_colors, axis=0).format(
                     formatter={
-                        "Market Cap (Cr)": "{:,.2f}", 
+                        "Market Cap (Cr)": "{:,.0f}", 
                         "Price": "{:,.2f}", 
-                        "1W Return (%)": "{:.2f}%", "1M Return (%)": "{:.2f}%",
+                        "1D Return (%)": "{:.2f}%", "1W Return (%)": "{:.2f}%", "1M Return (%)": "{:.2f}%",
                         "3M Return (%)": "{:.2f}%", "6M Return (%)": "{:.2f}%", "1Y Return (%)": "{:.2f}%"
                     }, na_rep="-"
                 )
