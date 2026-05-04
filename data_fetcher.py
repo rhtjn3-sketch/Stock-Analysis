@@ -2,6 +2,7 @@ import yfinance as yf
 import pandas as pd
 import requests
 import io
+import time
 import concurrent.futures
 
 def update_market_data():
@@ -28,14 +29,17 @@ def update_market_data():
     print(f"Step 2: Downloading 2-year history for {total_tickers} stocks via ThreadPool...")
     data_frames = []
     
+    # UPGRADED: 3-Retry loop to prevent silent drops
     def download_single(ticker):
-        try:
-            df = yf.Ticker(ticker).history(period="2y")
-            if not df.empty:
-                df.columns = pd.MultiIndex.from_product([[ticker], df.columns])
-                return df
-        except Exception:
-            pass
+        for attempt in range(3):
+            try:
+                df = yf.Ticker(ticker).history(period="2y")
+                if not df.empty:
+                    df.columns = pd.MultiIndex.from_product([[ticker], df.columns])
+                    return df
+            except Exception:
+                pass
+            time.sleep(1) # Breathe before retrying
         return None
 
     # Using ThreadPool to bypass rate limits cleanly
@@ -52,16 +56,65 @@ def update_market_data():
                 print(f"   ... Secured {completed} / {total_tickers} stocks")
 
     if data_frames:
-        print("Step 3: Compiling and saving to Parquet file...")
+        print("Step 3: Compiling and saving Stock data...")
         final_data = pd.concat(data_frames, axis=1)
         
-        # Save to a highly compressed file format
+        # Save to highly compressed Parquet
         final_data.to_parquet("nifty_750_master.parquet", engine="pyarrow")
-        # Save to CSV instead
+        # Save to CSV (as requested in your baseline)
         final_data.to_csv("nifty_750_master.csv")
-        print("✅ SUCCESS! nifty_750_master.parquet has been updated.")
+        print("✅ SUCCESS! nifty_750_master files have been updated.")
     else:
-        print("❌ FAILED to download any data.")
+        print("❌ FAILED to download any stock data.")
+
+    # ==========================================================
+    # Step 4: FETCH ALL INDICES (BROAD + SECTORAL)
+    # ==========================================================
+    print("\nStep 4: Fetching 1-Year Historical Data for Indices...")
+    broad_indices = ["^NSEI", "^NSMIDCP", "NIFTYMIDCAP150.NS", "HDFCSML250.NS", "^CRSLDX"]
+    sectoral_indices = [
+        "^CNXSERVICE", "^CNXREALTY", "HDFCPVTBAN.NS", "^CNXPHARMA", "^CNXPSUBANK", 
+        "OILIETF.NS", "^CNXMETAL", "^CNXMEDIA", "^CNXMNC", "^CNXINFRA", "^CNXCONSUM", 
+        "^CNXIT", "NIFTY_FIN_SERVICE.NS", "^CNXFMCG", "^CNXENERGY", "^CNXCMDT", 
+        "CPSEETF.NS", "^NSEBANK", "^CNXAUTO", "MODEFENCE.NS", "MOTOUR.NS", 
+        "MOCAPITAL.NS", "AXISHCETF.NS"
+    ]
+    
+    # Combine and remove any duplicates
+    all_indices = list(set(broad_indices + sectoral_indices))
+    index_frames = []
+    
+    completed_idx = 0
+    for ticker in all_indices:
+        for attempt in range(3): # 3-Retry Loop for Safety
+            try:
+                df = yf.Ticker(ticker).history(period="1y")
+                if not df.empty:
+                    df = df[['Close']].copy()
+                    df.columns = [ticker]
+                    df.index = df.index.tz_localize(None) # Align timezones perfectly
+                    index_frames.append(df)
+                    break
+            except Exception:
+                pass
+            time.sleep(0.5)
+            
+        completed_idx += 1
+        if completed_idx % 5 == 0:
+            print(f"   ... Secured {completed_idx} / {len(all_indices)} indices")
+
+    if index_frames:
+        print("Step 5: Compiling and saving Index data...")
+        merged_idx = pd.concat(index_frames, axis=1)
+        merged_idx = merged_idx.ffill().dropna(how='all') # Fixes holiday mismatches
+        
+        merged_idx.to_parquet("nifty_indices_master.parquet", engine="pyarrow")
+        merged_idx.to_csv("nifty_indices_master.csv")
+        print("✅ SUCCESS! nifty_indices_master files have been updated.")
+    else:
+        print("❌ FAILED to download index data.")
+        
+    print("\n🚀 FULL SYSTEM REFRESH COMPLETE.")
 
 if __name__ == "__main__":
     update_market_data()
