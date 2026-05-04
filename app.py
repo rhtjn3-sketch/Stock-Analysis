@@ -96,7 +96,7 @@ def trigger_manual_data_refresh():
 # =======================================================
 @st.cache_data(show_spinner=False)
 def fetch_market_data_bulk():
-	"""Reads the pre-downloaded Parquet file instantly."""													  
+    """Reads the pre-downloaded Parquet file instantly."""
     try:
         final_data = pd.read_parquet("nifty_750_master.parquet")
         tickers = list(final_data.columns.levels[0])
@@ -148,8 +148,8 @@ def load_data_watchlist():
             df = data[ticker].dropna() if len(tickers) > 1 else data.dropna()
             if df.empty: continue
             
-            clean_symbol = ticker.replace('.NS', '')                                       
-			# Instantly pull fundamentals from the Excel dictionaries (ZERO API CALLS)																		  
+            clean_symbol = ticker.replace('.NS', '')
+            # Instantly pull fundamentals from the Excel dictionaries (ZERO API CALLS)
             sector = sector_dict.get(clean_symbol, 'Unknown')
             market_cap_cr = mcap_dict.get(clean_symbol, 0.0)
             current_price = df['Close'].iloc[-1]
