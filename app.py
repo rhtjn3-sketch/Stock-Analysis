@@ -34,7 +34,7 @@ def prev_page():
 # INCREMENTAL DATA REFRESH (The "Delta Sync")
 # =======================================================
 def trigger_manual_data_refresh():
-	"""Performs a high-speed incremental sync by fetching ONLY today's data."""																		   
+    """Performs a high-speed incremental sync by fetching ONLY today's data."""
     st.sidebar.info("Step 1: Reading existing database...")
     
     if not os.path.exists("nifty_750_master.parquet"):
@@ -43,7 +43,7 @@ def trigger_manual_data_refresh():
         
     try:
         existing_data = pd.read_parquet("nifty_750_master.parquet")
-		# Extract the exact tickers already in our database												   
+		# Extract the exact tickers already in our database
         tickers = list(existing_data.columns.levels[0])
     except Exception as e:
         st.sidebar.error("❌ Error reading Parquet file.")
