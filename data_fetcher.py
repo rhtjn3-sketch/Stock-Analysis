@@ -35,6 +35,8 @@ def update_market_data():
             try:
                 df = yf.Ticker(ticker).history(period="2y")
                 if not df.empty:
+                    # --- NEW CLEANUP LINE ---
+                    df = df[df['Volume'] > 0]
                     df.columns = pd.MultiIndex.from_product([[ticker], df.columns])
                     return df
             except Exception:
