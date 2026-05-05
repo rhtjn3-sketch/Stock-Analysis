@@ -140,7 +140,7 @@ def update_market_data():
     for ticker in (world_tickers + macro_tickers):
         for attempt in range(3):
             try:
-                df = yf.Ticker(ticker).history(period="1y")
+                df = yf.Ticker(ticker).history(period="2y")
                 if not df.empty:
                     df = df[['Close']].copy()
                     df.columns = [ticker]
