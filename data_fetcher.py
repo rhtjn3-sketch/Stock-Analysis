@@ -109,7 +109,7 @@ def update_market_data():
             print(f"   ... Secured {completed_idx} / {len(all_indices)} indices")
 
     if index_frames:
-        print("Step 5: Compiling and saving Index data...")
+        #print("Step 5: Compiling and saving Index data...")
         merged_idx = pd.concat(index_frames, axis=1)
 
         # --- NEW: THE MASTER CALENDAR FILTER ---
@@ -129,9 +129,9 @@ def update_market_data():
 
     
     # ==========================================================
-    # Step 6: FETCH WORLD INDICES & MACRO (Independent Calendars)
+    # Step 5: FETCH WORLD INDICES & MACRO (Independent Calendars)
     # ==========================================================
-    print("\nStep 6: Fetching World Indices & Macro Assets...")
+    print("\nStep 5: Fetching World Indices & Macro Assets...")
     world_tickers = ["^KS11", "^N225", "^BVSP", "^DJI", "^FTSE", "^RUT", "NQ=F", "^GSPC", "^BSESN", "^FCHI", "^GDAXI", "^HSI", "^MXX", "^STOXX50E", "^STI", "^TWII", "^AXJO", "^GSPTSE"]
     macro_tickers = ["DX-Y.NYB", "GC=F", "CL=F", "^TNX", "INR=X", "^NSEI"] # Need Nifty & INR for Gold Math
     
