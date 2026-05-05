@@ -132,7 +132,7 @@ def update_market_data():
     # Step 5: FETCH WORLD INDICES & MACRO (Independent Calendars)
     # ==========================================================
     print("\nStep 5: Fetching World Indices & Macro Assets...")
-    world_tickers = ["^KS11", "^N225", "^BVSP", "^DJI", "^FTSE", "^RUT", "NQ=F", "^GSPC", "^BSESN", "^FCHI", "^GDAXI", "^HSI", "^MXX", "^STOXX50E", "^STI", "^TWII", "^AXJO", "^GSPTSE"]
+    world_tickers = ["^KS11", "^N225", "^BVSP", "^DJI", "^FTSE", "^RUT", "NQ=F", "^GSPC", "^BSESN", "^FCHI", "^GDAXI", "^HSI", "^MXX", "^STOXX50E", "^STI", "^TWII", "^AXJO", "^GSPTSE","^NSEI"]
     macro_tickers = ["DX-Y.NYB", "GC=F", "CL=F", "^TNX", "INR=X", "^NSEI"] # Need Nifty & INR for Gold Math
     
     global_frames = {}
