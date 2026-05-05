@@ -35,8 +35,11 @@ def update_market_data():
             try:
                 df = yf.Ticker(ticker).history(period="2y")
                 if not df.empty:
-                    # --- NEW CLEANUP LINE ---
+                    # 1. Filter out holidays (Phantom rows have 0 volume)
                     df = df[df['Volume'] > 0]
+                    # 2. Strip timezones so dates match perfectly
+                    df.index = df.index.tz_localize(None)
+                    
                     df.columns = pd.MultiIndex.from_product([[ticker], df.columns])
                     return df
             except Exception:
@@ -108,7 +111,15 @@ def update_market_data():
     if index_frames:
         print("Step 5: Compiling and saving Index data...")
         merged_idx = pd.concat(index_frames, axis=1)
-        merged_idx = merged_idx.ffill().dropna(how='all') # Fixes holiday mismatches
+
+        # --- NEW: THE MASTER CALENDAR FILTER ---
+        # If we successfully downloaded and cleaned stock data...
+        if data_frames and 'final_data' in locals():
+            # Force the index data to only keep dates that exist in the clean stock data
+            merged_idx = merged_idx[merged_idx.index.isin(final_data.index)]
+            
+        # Fill any internal gaps just in case
+        merged_idx = merged_idx.ffill().dropna(how='all')
         
         merged_idx.to_parquet("nifty_indices_master.parquet", engine="pyarrow")
         merged_idx.to_csv("nifty_indices_master.csv")
