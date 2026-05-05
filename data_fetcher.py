@@ -126,7 +126,45 @@ def update_market_data():
         print("✅ SUCCESS! nifty_indices_master files have been updated.")
     else:
         print("❌ FAILED to download index data.")
+
+    
+    # ==========================================================
+    # Step 6: FETCH WORLD INDICES & MACRO (Independent Calendars)
+    # ==========================================================
+    print("\nStep 6: Fetching World Indices & Macro Assets...")
+    world_tickers = ["^KS11", "^N225", "^BVSP", "^DJI", "^FTSE", "^RUT", "NQ=F", "^GSPC", "^BSESN", "^FCHI", "^GDAXI", "^HSI", "^MXX", "^STOXX50E", "^STI", "^TWII", "^AXJO", "^GSPTSE"]
+    macro_tickers = ["DX-Y.NYB", "GC=F", "CL=F", "^TNX", "INR=X", "^NSEI"] # Need Nifty & INR for Gold Math
+    
+    global_frames = {}
+    
+    for ticker in (world_tickers + macro_tickers):
+        for attempt in range(3):
+            try:
+                df = yf.Ticker(ticker).history(period="1y")
+                if not df.empty:
+                    df = df[['Close']].copy()
+                    df.columns = [ticker]
+                    df.index = df.index.tz_localize(None)
+                    global_frames[ticker] = df
+                    break
+            except Exception: pass
+            time.sleep(0.5)
+
+    if global_frames:
+        # Save World Indices
+        world_df = pd.concat([global_frames[t] for t in world_tickers if t in global_frames], axis=1)
+        world_df = world_df.ffill().dropna(how='all')
+        world_df.to_parquet("world_indices_master.parquet", engine="pyarrow")
+        world_df.to_csv("world_indices_master.csv")
         
+        # Save Macro
+        macro_df = pd.concat([global_frames[t] for t in macro_tickers if t in global_frames], axis=1)
+        macro_df = macro_df.ffill().dropna(how='all')
+        macro_df.to_parquet("macro_master.parquet", engine="pyarrow")
+        macro_df.to_csv("macro_master.csv")
+        
+        print("✅ SUCCESS! Global & Macro master files updated.")
+    
     print("\n🚀 FULL SYSTEM REFRESH COMPLETE.")
 
 if __name__ == "__main__":
