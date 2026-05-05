@@ -2,9 +2,9 @@ name: Daily Market Data Fetch
 
 on:
   schedule:
-    # 6:17 UTC = 11:47 AM IST | 10:17 UTC = 3:47 PM IST (Runs Mon-Fri)
+    # 4:17 UTC = 9:47 AM IST | 10:17 UTC = 3:47 PM IST (Runs Mon-Fri)
     # Using '17' jumps the GitHub Actions traffic jam queue
-    - cron: '17 6,10 * * 1-5'
+    - cron: '17 4,10 * * 1-5'
   workflow_dispatch:
 
 permissions:
