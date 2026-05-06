@@ -471,7 +471,10 @@ elif st.session_state.current_page == 5:
                         nd.append(df)
                 except: pass
             if nd:
-                pd.concat([ed, pd.concat(nd, axis=1)]).drop_duplicates(keep='last').to_parquet("nifty_750_master.parquet", engine="pyarrow")
+                # 🐛 FIX 1: Deduplicate by Date Index, keeping the absolute latest entry
+                final_df = pd.concat([ed, pd.concat(nd, axis=1)])
+                final_df = final_df[~final_df.index.duplicated(keep='last')]
+                final_df.to_parquet("nifty_750_master.parquet", engine="pyarrow")
                 return True
             return False
             
@@ -520,8 +523,14 @@ elif st.session_state.current_page == 5:
         for stock, info in history_records.items():
             df_hist_str = info['History'].copy()
             df_hist_str.index = df_hist_str.index.strftime('%Y-%m-%d')
+            
             if selected_date_str in df_hist_str.index:
                 row = df_hist_str.loc[selected_date_str]
+                
+                # 🐛 FIX 2: If duplicate dates somehow sneak in, grab only the absolute last one
+                if isinstance(row, pd.DataFrame):
+                    row = row.iloc[-1]
+                
                 if row['Pct_Change'] >= price_surge_pct and row['Vol_Surge'] >= vol_multiplier:
                     ac = df_hist_str[(df_hist_str['Pct_Change'] >= price_surge_pct) & (df_hist_str['Vol_Surge'] >= vol_multiplier)]
                     results.append({"Stock": stock, "Sector": info['Sector'], "Close Price": row['Close'], "Volume": row['Volume'], "20D Avg Volume": row['Avg_Volume'], "Volume Surge (x)": row['Vol_Surge'], "Price Change (%)": row['Pct_Change'], "Action Count (30 Days)": f"{len(ac)} ({', '.join(ac.index.tolist())})"})
