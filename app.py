@@ -191,20 +191,27 @@ def fetch_sector_constituents(name):
 # MOMENTUM MATRIX STYLER
 # =======================================================
 def get_rank_color(val, max_rank):
+    """Discrete Hex mapping matching Sheet 3 Deep Dive colors."""
     try:
         if pd.isna(val) or val == "-": return ""
         rank = int(str(val).split(' ')[0])
-        if max_rank <= 1: return "background-color: #fbc02d; color: black;"
+        if max_rank <= 1: return "background-color: #a5d6a7; color: black;"
+        
+        # Calculate where this rank falls on a scale of 0.0 (Top) to 1.0 (Bottom)
         ratio = (rank - 1) / (max_rank - 1)
-        if ratio <= 0.5:
-            r = int(27 + (251 - 27) * (ratio / 0.5)); g = int(94 + (192 - 94) * (ratio / 0.5)); b = int(32 + (45 - 32) * (ratio / 0.5))
-            color = "white" if ratio < 0.35 else "black"
-        else:
-            ratio2 = (ratio - 0.5) / 0.5
-            r = int(251 + (183 - 251) * ratio2); g = int(192 + (28 - 192) * ratio2); b = int(45 + (28 - 45) * ratio2)
-            color = "black" if ratio2 < 0.5 else "white"
-        return f"background-color: rgb({r}, {g}, {b}); color: {color}; font-weight: bold;"
-    except: return ""
+        
+        # Map to the 9 soothing Hex codes from Sheet 3
+        if ratio <= 0.11:   return 'background-color: #1b5e20; color: white;'  # Dark Green
+        elif ratio <= 0.22: return 'background-color: #4caf50; color: white;'  # Green
+        elif ratio <= 0.33: return 'background-color: #a5d6a7; color: black;'  # Light Green
+        elif ratio <= 0.44: return 'background-color: #ffe0b2; color: black;'  # Light Orange/Neutral
+        elif ratio <= 0.55: return 'background-color: #ff9800; color: black;'  # Orange
+        elif ratio <= 0.66: return 'background-color: #f57c00; color: white;'  # Dark Orange
+        elif ratio <= 0.77: return 'background-color: #ef9a9a; color: black;'  # Light Red
+        elif ratio <= 0.88: return 'background-color: #f44336; color: white;'  # Red
+        else:               return 'background-color: #b71c1c; color: white;'  # Dark Red
+    except: 
+        return ""
 
 def render_momentum_matrix(df_metrics, title):
     cols_to_rank = ['1W Return (%)', '1M Return (%)', '3M Return (%)', '6M Return (%)', '1Y Return (%)']
